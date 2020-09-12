@@ -18,11 +18,18 @@ package io.fabric8.kubernetes.client.internal;
 
 import io.fabric8.kubernetes.api.model.ConfigMap;
 import io.fabric8.kubernetes.api.model.ConfigMapBuilder;
+import io.fabric8.kubernetes.api.model.Event;
+import io.fabric8.kubernetes.api.model.EventBuilder;
+import io.fabric8.kubernetes.api.model.Pod;
+import io.fabric8.kubernetes.api.model.PodBuilder;
 import io.fabric8.kubernetes.client.utils.KubernetesResourceUtil;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -81,5 +88,61 @@ public class KubernetesResourceUtilTest {
 
     assertTrue(KubernetesResourceUtil.isValidName(KubernetesResourceUtil.sanitizeName("test.invalid.name")));
     assertTrue(KubernetesResourceUtil.isValidName(KubernetesResourceUtil.sanitizeName("90notcool-n@me")));
+  }
+
+  @Test
+  void testSortEventListBasedOnTimestamp() {
+    // Given
+    List<Event> eventList = new ArrayList<>();
+    eventList.add(new EventBuilder()
+      .withNewMetadata().withName("event2").endMetadata()
+      .withLastTimestamp("2020-06-12T06:45:16Z")
+      .build());
+    eventList.add(new EventBuilder()
+      .withNewMetadata().withName("event1").endMetadata()
+      .withLastTimestamp("2020-06-10T06:45:16Z")
+      .build());
+    eventList.add(new EventBuilder()
+      .withNewMetadata().withName("event3").endMetadata()
+      .withLastTimestamp("2020-06-13T06:45:16Z")
+      .build());
+
+    // When
+    KubernetesResourceUtil.sortEventListBasedOnTimestamp(eventList);
+
+    // Then
+    assertEquals("event3", eventList.get(0).getMetadata().getName());
+    assertEquals("event2", eventList.get(1).getMetadata().getName());
+    assertEquals("event1", eventList.get(2).getMetadata().getName());
+  }
+
+  @Test
+  @DisplayName("Should be able to get resource version")
+  void testGetResourceVersion() {
+    // Given
+    Pod pod = new PodBuilder()
+      .withNewMetadata().withName("test").withResourceVersion("1001").endMetadata()
+      .build();
+
+    // When
+    String resourceVersion = KubernetesResourceUtil.getResourceVersion(pod);
+
+    // Then
+    assertEquals("1001", resourceVersion);
+  }
+
+  @Test
+  @DisplayName("Should be able to update resource version")
+  void testSetResourceVersion() {
+    // Given
+    Pod pod = new PodBuilder()
+      .withNewMetadata().withName("test").withResourceVersion("1001").endMetadata()
+      .build();
+
+    // When
+    KubernetesResourceUtil.setResourceVersion(pod, "1002");
+
+    // Then
+    assertEquals("1002", pod.getMetadata().getResourceVersion());
   }
 }

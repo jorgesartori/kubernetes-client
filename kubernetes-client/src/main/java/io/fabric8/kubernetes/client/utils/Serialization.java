@@ -1,4 +1,4 @@
-    /**
+/**
  * Copyright (C) 2015 Red Hat, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,6 +19,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.fabric8.kubernetes.api.model.KubernetesResource;
 import io.fabric8.kubernetes.client.KubernetesClientException;
 
@@ -35,10 +36,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 public class Serialization {
 
   private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
+  static {
+    JSON_MAPPER.registerModule(new JavaTimeModule());
+  }
   private static final ObjectMapper YAML_MAPPER = new ObjectMapper(new YAMLFactory());
   private static final String DOCUMENT_DELIMITER = "---";
 
@@ -87,7 +92,8 @@ public class Serialization {
    * @return returns returns de-serialized object
    * @throws KubernetesClientException KubernetesClientException
    */
-  public static <T> T unmarshal(InputStream is, Map<String, String> parameters) throws KubernetesClientException {
+  @SuppressWarnings("unchecked")
+  public static <T> T unmarshal(InputStream is, Map<String, String> parameters) {
     String specFile = readSpecFileFromInputStream(is);
     if (containsMultipleDocuments(specFile)) {
       return (T) getKubernetesResourceList(parameters, specFile);
@@ -101,10 +107,9 @@ public class Serialization {
    * @param mapper  The {@link ObjectMapper} to use.
    * @param <T>     The target type.
    * @return returns de-serialized object
-   * @throws KubernetesClientException KubernetesClientException
    */
   public static <T> T unmarshal(InputStream is, ObjectMapper mapper) {
-   return unmarshal(is, mapper, Collections.<String, String>emptyMap());
+   return unmarshal(is, mapper, Collections.emptyMap());
   }
 
   /**
@@ -114,11 +119,12 @@ public class Serialization {
    * @param parameters  A {@link Map} with parameters for placeholder substitution.
    * @param <T>         The target type.
    * @return returns de-serialized object
-   * @throws KubernetesClientException KubernetesClientException
    */
   public static <T> T unmarshal(InputStream is, ObjectMapper mapper, Map<String, String> parameters) {
-    InputStream wrapped = parameters != null && !parameters.isEmpty() ? new ReplaceValueStream(parameters).createInputStream(is) : is;
-    try (BufferedInputStream bis = new BufferedInputStream(wrapped)) {
+    try (
+      InputStream wrapped = parameters != null && !parameters.isEmpty() ? ReplaceValueStream.replaceValues(is, parameters) : is;
+      BufferedInputStream bis = new BufferedInputStream(wrapped)
+    ) {
       bis.mark(-1);
       int intch;
       do {
@@ -141,10 +147,9 @@ public class Serialization {
    * @param type  The target type.
    * @param <T>   template argument denoting type
    * @return returns de-serialized object
-   * @throws KubernetesClientException KubernetesClientException
    */
-  public static<T> T unmarshal(String str, final Class<T> type) throws KubernetesClientException {
-    return unmarshal(str, type, Collections.<String, String>emptyMap());
+  public static<T> T unmarshal(String str, final Class<T> type) {
+    return unmarshal(str, type, Collections.emptyMap());
   }
 
   /**
@@ -158,7 +163,7 @@ public class Serialization {
    * @throws KubernetesClientException KubernetesClientException
    */
   public static <T> T unmarshal(String str, final Class<T> type, Map<String, String> parameters) throws KubernetesClientException {
-    try (InputStream is = new ByteArrayInputStream(str.getBytes(StandardCharsets.UTF_8));) {
+    try (InputStream is = new ByteArrayInputStream(str.getBytes(StandardCharsets.UTF_8))) {
       return unmarshal(is, new TypeReference<T>() {
         @Override
         public Type getType() {
@@ -176,10 +181,9 @@ public class Serialization {
    * @param type            The type.
    * @param <T>           Template argument denoting type
    * @return returns de-serialized object
-   * @throws KubernetesClientException KubernetesClientException
    */
-  public static <T> T unmarshal(InputStream is, final Class<T> type) throws KubernetesClientException {
-    return unmarshal(is, type, Collections.<String, String>emptyMap());
+  public static <T> T unmarshal(InputStream is, final Class<T> type) {
+    return unmarshal(is, type, Collections.emptyMap());
   }
 
   /**
@@ -207,10 +211,9 @@ public class Serialization {
    * @param type          The {@link TypeReference}.
    * @param <T>           Template argument denoting type
    * @return returns de-serialized object
-   * @throws KubernetesClientException KubernetesClientException
    */
-  public static <T> T unmarshal(InputStream is, TypeReference<T> type) throws KubernetesClientException {
-   return unmarshal(is, type, Collections.<String, String>emptyMap());
+  public static <T> T unmarshal(InputStream is, TypeReference<T> type) {
+   return unmarshal(is, type, Collections.emptyMap());
   }
 
   /**
@@ -224,9 +227,11 @@ public class Serialization {
    * @return returns de-serialized object
    * @throws KubernetesClientException KubernetesClientException
    */
-  public static <T> T unmarshal(InputStream is, TypeReference<T> type, Map<String, String> parameters) throws KubernetesClientException {
-    InputStream wrapped = parameters != null && !parameters.isEmpty() ? new ReplaceValueStream(parameters).createInputStream(is) : is;
-    try (BufferedInputStream bis = new BufferedInputStream(wrapped)) {
+  public static <T> T unmarshal(InputStream is, TypeReference<T> type, Map<String, String> parameters) {
+    try (
+      InputStream wrapped = parameters != null && !parameters.isEmpty() ? ReplaceValueStream.replaceValues(is, parameters) : is;
+      BufferedInputStream bis = new BufferedInputStream(wrapped)
+    ) {
       bis.mark(-1);
       int intch;
       do {
@@ -246,50 +251,33 @@ public class Serialization {
 
 
   private static List<KubernetesResource> getKubernetesResourceList(Map<String, String> parameters, String specFile) {
-    List<KubernetesResource> documentList = new ArrayList<>();
-    String[] documents = splitSpecFile(specFile);
-    for (String document : documents) {
-      if (validate(document)) {
-        ByteArrayInputStream documentInputStream = new ByteArrayInputStream(document.getBytes());
-        Object resource = Serialization.unmarshal(documentInputStream, parameters);
-        documentList.add((KubernetesResource) resource);
-      }
-    }
-    return documentList;
+    return splitSpecFile(specFile).stream().filter(Serialization::validate)
+      .map(document ->
+        (KubernetesResource)Serialization.unmarshal(new ByteArrayInputStream(document.getBytes()), parameters))
+      .collect(Collectors.toList());
   }
 
-  private static boolean containsMultipleDocuments(String specFile) {
-    String[] documents = splitSpecFile(specFile);
-    int nValidDocuments = 0;
-    for(String document : documents) {
-      if(validate(document))
-        nValidDocuments++;
-    }
-
-    return nValidDocuments > 1;
+  static boolean containsMultipleDocuments(String specFile) {
+    final long validDocumentCount = splitSpecFile(specFile).stream().filter(Serialization::validate)
+      .count();
+    return validDocumentCount > 1;
   }
 
-  private static String[] splitSpecFile(String aSpecFile) {
-    List<String> documents = new ArrayList<>();
-    String[] lines = aSpecFile.split(System.lineSeparator());
-    int nLine = 0;
-    StringBuilder builder = new StringBuilder();
-
-    while(nLine < lines.length) {
-      if((lines[nLine].length() >= DOCUMENT_DELIMITER.length()
-          && !lines[nLine].substring(0, DOCUMENT_DELIMITER.length()).equals(DOCUMENT_DELIMITER)) || (lines[nLine].length() < DOCUMENT_DELIMITER.length())) {
-        builder.append(lines[nLine] + System.lineSeparator());
+  private static List<String> splitSpecFile(String aSpecFile) {
+    final List<String> documents = new ArrayList<>();
+    final StringBuilder documentBuilder = new StringBuilder();
+    for (String line : aSpecFile.split("\r?\n")) {
+      if (line.startsWith(DOCUMENT_DELIMITER)) {
+        documents.add(documentBuilder.toString());
+        documentBuilder.setLength(0);
       } else {
-        documents.add(builder.toString());
-        builder.setLength(0);
+        documentBuilder.append(line).append(System.lineSeparator());
       }
-
-      nLine++;
     }
-
-    if(!builder.toString().isEmpty())
-      documents.add(builder.toString());
-    return documents.toArray(new String[documents.size()]);
+    if (documentBuilder.length() > 0) {
+      documents.add(documentBuilder.toString());
+    }
+    return documents;
   }
 
   private static boolean validate(String document) {

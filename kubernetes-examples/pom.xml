@@ -17,14 +17,13 @@
 
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
   <parent>
     <groupId>io.fabric8</groupId>
     <artifactId>kubernetes-client-project</artifactId>
-    <version>4.4-SNAPSHOT</version>
+    <version>4.11-SNAPSHOT</version>
   </parent>
-  <modelVersion>4.0.0</modelVersion>
 
-  <groupId>io.fabric8</groupId>
   <artifactId>kubernetes-examples</artifactId>
   <packaging>jar</packaging>
   <name>Fabric8 :: Kubernetes :: Client Examples</name>
@@ -34,35 +33,28 @@
     <masterUrl>https://localhost:8443/</masterUrl>
     <namespace>default</namespace>
   </properties>
+
   <dependencies>
     <dependency>
       <groupId>io.fabric8</groupId>
       <artifactId>openshift-client</artifactId>
-      <version>${project.version}</version>
     </dependency>
 
     <dependency>
-      <groupId>org.apache.logging.log4j</groupId>
-      <artifactId>log4j-slf4j-impl</artifactId>
-      <version>${log4j.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.logging.log4j</groupId>
-      <artifactId>log4j-core</artifactId>
-      <version>${log4j.version}</version>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
+      <version>${slf4j.version}</version>
     </dependency>
 
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-engine</artifactId>
-      <version>${junit.version}</version>
       <scope>compile</scope>
     </dependency>
 
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-migrationsupport</artifactId>
-      <version>${junit.version}</version>
       <scope>compile</scope>
     </dependency>
   </dependencies>
@@ -72,7 +64,7 @@
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>exec-maven-plugin</artifactId>
-        <version>1.6.0</version>
+        <version>3.0.0</version>
         <executions>
           <execution>
             <goals>
@@ -126,6 +118,21 @@
             <artifactId>exec-maven-plugin</artifactId>
             <configuration>
               <mainClass>io.fabric8.openshift.examples.WatchBuildConfigs</mainClass>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <profile>
+      <id>leader-election</id>
+      <build>
+        <defaultGoal>test-compile exec:java</defaultGoal>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <configuration>
+              <mainClass>io.fabric8.kubernetes.examples.LeaderElectionExamples$ConcurrentExample</mainClass>
             </configuration>
           </plugin>
         </plugins>
@@ -186,6 +193,21 @@
             <artifactId>exec-maven-plugin</artifactId>
             <configuration>
               <mainClass>io.fabric8.kubernetes.examples.ExecExample</mainClass>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <profile>
+      <id>wait-until-ready</id>
+      <build>
+        <defaultGoal>test-compile exec:java</defaultGoal>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <configuration>
+              <mainClass>io.fabric8.kubernetes.examples.WaitUntilReadyExample</mainClass>
             </configuration>
           </plugin>
         </plugins>

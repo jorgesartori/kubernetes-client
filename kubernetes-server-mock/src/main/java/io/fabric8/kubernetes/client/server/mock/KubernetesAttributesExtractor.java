@@ -15,22 +15,28 @@
  */
 package io.fabric8.kubernetes.client.server.mock;
 
+import static io.fabric8.mockwebserver.crud.AttributeType.EXISTS;
+import static io.fabric8.mockwebserver.crud.AttributeType.NOT_EXISTS;
+import static io.fabric8.mockwebserver.crud.AttributeType.WITHOUT;
+
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Locale;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import io.fabric8.kubernetes.api.model.HasMetadata;
 import io.fabric8.kubernetes.client.utils.Serialization;
 import io.fabric8.kubernetes.client.utils.Utils;
 import io.fabric8.mockwebserver.crud.Attribute;
 import io.fabric8.mockwebserver.crud.AttributeExtractor;
 import io.fabric8.mockwebserver.crud.AttributeSet;
-import java.util.Map;
 import okhttp3.HttpUrl;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 public class KubernetesAttributesExtractor implements AttributeExtractor<HasMetadata> {
 
@@ -47,16 +53,22 @@ public class KubernetesAttributesExtractor implements AttributeExtractor<HasMeta
   private static final String KIND_GROUP = "/(?<kind>[^/?]+)";
   private static final String NAME_GROUP = "(/(?<name>[^/?]+))?";
   private static final String NAMESPACE_GROUP = "(/namespaces/(?<namespace>[^/]+))?";
+  private static final String SUBRESOURCE_MAYBE_GROUP = "(/(status|scale))?";
   private static final String END_GROUP = "[^ /]*";
 
-  protected static final Pattern PATTERN = Pattern.compile(API_GROUP + VERSION_GROUP + NAMESPACE_GROUP + KIND_GROUP + NAME_GROUP + END_GROUP);
+  protected static final Pattern PATTERN = Pattern.compile(API_GROUP + VERSION_GROUP + NAMESPACE_GROUP + KIND_GROUP + NAME_GROUP + SUBRESOURCE_MAYBE_GROUP + END_GROUP);
 
   private static final String LABEL_KEY_PREFIX = "labels:";
   private static final String KEY_GROUP = "(?<key>[a-zA-Z0-9-_./]+)";
   // Matches a==b and a=b but not a!=b.
   private static final String EQUALITY_GROUP = "(==|(?<!!)=)";
+  // Matches a!=b but not a==b or a=b .
+  private static final String NOT_EQUALITY_GROUP = "(!=)";
   private static final String VALUE_GROUP = "(?<value>[a-zA-Z0-9-_.]+)";
   private static final Pattern LABEL_REQUIREMENT_EQUALITY = Pattern.compile(KEY_GROUP + EQUALITY_GROUP + VALUE_GROUP);
+  private static final Pattern LABEL_REQUIREMENT_NOT_EQUALITY = Pattern.compile(KEY_GROUP + NOT_EQUALITY_GROUP + VALUE_GROUP);
+  private static final Pattern LABEL_REQUIREMENT_EXISTS = Pattern.compile(KEY_GROUP);
+  private static final Pattern LABEL_REQUIREMENT_NOT_EXISTS = Pattern.compile("!" + KEY_GROUP);
 
   // These elements are added to the path/query fragment so that it can be parsed by HttpUrl. Their
   // values are not important, HttpUrl expects the scheme to be http or https.
@@ -102,7 +114,6 @@ public class KubernetesAttributesExtractor implements AttributeExtractor<HasMeta
     return new AttributeSet();
   }
 
-
   @Override
   public AttributeSet extract(String s) {
     if (s == null || s.isEmpty()) {
@@ -117,28 +128,31 @@ public class KubernetesAttributesExtractor implements AttributeExtractor<HasMeta
     return fromPath(s);
   }
 
-
   @Override
   public AttributeSet extract(HasMetadata o) {
-    AttributeSet attributes = new AttributeSet();
+    AttributeSet attributes = extractMetadataAttributes(o);
     if (!Utils.isNullOrEmpty(o.getKind())) {
-      attributes = attributes.add(new Attribute(KIND, o.getKind().toLowerCase()));
-    }
-
-    if (!Utils.isNullOrEmpty(o.getMetadata().getName())) {
-      attributes = attributes.add(new Attribute(NAME, o.getMetadata().getName()));
-    }
-
-    if (!Utils.isNullOrEmpty(o.getMetadata().getNamespace())) {
-      attributes = attributes.add(new Attribute(NAMESPACE, o.getMetadata().getNamespace()));
-    }
-
-    if (o.getMetadata().getLabels() != null) {
-      for (Map.Entry<String, String> label : o.getMetadata().getLabels().entrySet()) {
-        attributes = attributes.add(new Attribute(LABEL_KEY_PREFIX + label.getKey(), label.getValue()));
-      }
+        attributes = attributes.add(new Attribute(KIND, o.getKind().toLowerCase(Locale.ROOT)));
     }
     return attributes;
+  }
+
+  protected AttributeSet extractMetadataAttributes(HasMetadata hasMetadata) {
+      AttributeSet metadataAttributes = new AttributeSet();
+      if (!Utils.isNullOrEmpty(hasMetadata.getMetadata().getName())) {
+        metadataAttributes = metadataAttributes.add(new Attribute(NAME, hasMetadata.getMetadata().getName()));
+      }
+
+      if (!Utils.isNullOrEmpty(hasMetadata.getMetadata().getNamespace())) {
+          metadataAttributes = metadataAttributes.add(new Attribute(NAMESPACE, hasMetadata.getMetadata().getNamespace()));
+      }
+
+    if (hasMetadata.getMetadata().getLabels() != null) {
+      for (Map.Entry<String, String> label : hasMetadata.getMetadata().getLabels().entrySet()) {
+        metadataAttributes = metadataAttributes.add(new Attribute(LABEL_KEY_PREFIX + label.getKey(), label.getValue()));
+      }
+    }
+    return metadataAttributes;
   }
 
   private static AttributeSet extract(Matcher m) {
@@ -194,9 +208,10 @@ public class KubernetesAttributesExtractor implements AttributeExtractor<HasMeta
     String labelSelector = url.queryParameter("labelSelector");
     if (labelSelector != null) {
       for (String requirement : labelSelector.split(",")) {
-        Matcher m = LABEL_REQUIREMENT_EQUALITY.matcher(requirement);
-        if (m.matches()) {
-          attributes = attributes.add(new Attribute(LABEL_KEY_PREFIX + m.group(KEY), m.group(VALUE)));
+        Attribute label = parseLabel(requirement);
+
+        if (label != null) {
+          attributes = attributes.add(label);
         } else {
           LOGGER.warn("Ignoring unsupported label requirement: {}", requirement);
         }
@@ -205,9 +220,41 @@ public class KubernetesAttributesExtractor implements AttributeExtractor<HasMeta
     return attributes;
   }
 
+  private static Attribute parseLabel(String label) {
+    Matcher m = LABEL_REQUIREMENT_EQUALITY.matcher(label);
+    if (m.matches()) {
+      return new Attribute(LABEL_KEY_PREFIX + m.group(KEY), m.group(VALUE));
+    }
+
+    m = LABEL_REQUIREMENT_NOT_EQUALITY.matcher(label);
+    if (m.matches()) {
+      return new Attribute(LABEL_KEY_PREFIX + m.group(KEY), m.group(VALUE), WITHOUT);
+    }
+
+    m = LABEL_REQUIREMENT_EXISTS.matcher(label);
+    if (m.matches()) {
+      return new Attribute(LABEL_KEY_PREFIX + m.group(KEY), "", EXISTS);
+    }
+
+    m = LABEL_REQUIREMENT_NOT_EXISTS.matcher(label);
+    if (m.matches()) {
+      return new Attribute(LABEL_KEY_PREFIX + m.group(KEY), "", NOT_EXISTS);
+    }
+
+    return null;
+  }
+
   private static HasMetadata toKubernetesResource(String s) {
     try (InputStream stream = new ByteArrayInputStream(s.getBytes(StandardCharsets.UTF_8.name()))) {
       return Serialization.unmarshal(stream);
+    } catch (Exception e) {
+      return toRawHasMetadata(s);
+    }
+  }
+
+  private static HasMetadata toRawHasMetadata(String s) {
+    try (InputStream stream = new ByteArrayInputStream(s.getBytes(StandardCharsets.UTF_8.name()))) {
+      return Serialization.jsonMapper().readValue(stream, FallbackHasMetadata.class);
     } catch (Exception e) {
       return null;
     }

@@ -15,12 +15,11 @@
  */
 package io.fabric8.kubernetes.client.dsl.internal;
 
+import io.fabric8.kubernetes.api.model.DeletionPropagation;
 import io.fabric8.kubernetes.client.dsl.KubernetesListMixedOperation;
 import io.fabric8.kubernetes.client.dsl.KubernetesListOperation;
 import io.fabric8.kubernetes.client.dsl.Loadable;
-import io.fabric8.kubernetes.client.dsl.base.OperationContext;
 import okhttp3.OkHttpClient;
-import io.fabric8.kubernetes.api.builder.Function;
 import io.fabric8.kubernetes.api.builder.VisitableBuilder;
 import io.fabric8.kubernetes.api.model.DoneableKubernetesList;
 import io.fabric8.kubernetes.api.model.HasMetadata;
@@ -60,8 +59,8 @@ public class KubernetesListOperationsImpl
     this(client, config, namespace, null, null, false, false, null, null);
   }
 
-  public KubernetesListOperationsImpl(OkHttpClient client, Config config, String namespace, String name, Boolean cascading, Boolean fromServer, Boolean deletingExisting, KubernetesList item, String resourceVersion) {
-    super(client, config, namespace);
+  public KubernetesListOperationsImpl(OkHttpClient client, Config config, String namespace, String name, DeletionPropagation propagationPolicy, Boolean fromServer, Boolean deletingExisting, KubernetesList item, String resourceVersion) {
+    super(client, config, namespace, propagationPolicy);
     this.fromServer = fromServer;
     this.deletingExisting = deletingExisting;
     this.item = item;
@@ -79,15 +78,17 @@ public class KubernetesListOperationsImpl
       items = new KubernetesList[]{get()};
     }
     for (KubernetesList i : items) {
-      for (HasMetadata r : i.getItems()) {
-        HasMetadata created = create(r);
-        createdItems.add(created);
-      }
+      createdItems.addAll(createItemsInKubernetesList(i));
     }
 
     KubernetesList createdList = new KubernetesList();
     createdList.setItems(createdItems);
     return createdList;
+  }
+
+  @Override
+  public KubernetesList create(KubernetesList list) {
+    return create(new KubernetesList[]{list});
   }
 
   @Override
@@ -126,7 +127,7 @@ public class KubernetesListOperationsImpl
 
   @Override
   public RecreateFromServerGettable<KubernetesList, KubernetesList, DoneableKubernetesList> load(InputStream is) {
-    return new KubernetesListOperationsImpl(client, config, namespace, null, false, fromServer, deletingExisting, unmarshal(is, KubernetesList.class), null);
+    return new KubernetesListOperationsImpl(client, config, namespace, null, DeletionPropagation.BACKGROUND, fromServer, deletingExisting, unmarshal(is, KubernetesList.class), null);
   }
 
   @Override
@@ -152,7 +153,7 @@ public class KubernetesListOperationsImpl
     for (KubernetesList list : lists) {
       for (HasMetadata item : list.getItems()) {
         ResourceHandler<HasMetadata, HasMetadataVisitiableBuilder> handler = Handlers.get(item.getKind(), item.getApiVersion());
-        if (!handler.delete(client, config, namespace, false, item)) {
+        if (!handler.delete(client, config, namespace, DeletionPropagation.BACKGROUND, item)) {
           return false;
         }
       }
@@ -162,11 +163,20 @@ public class KubernetesListOperationsImpl
 
   @Override
   public Gettable<KubernetesList> fromServer() {
-    return new KubernetesListOperationsImpl(client, config, namespace, null, false, true, deletingExisting, item, null);
+    return new KubernetesListOperationsImpl(client, config, namespace, null, DeletionPropagation.BACKGROUND, true, deletingExisting, item, null);
   }
 
   @Override
   public Createable<KubernetesList, KubernetesList, DoneableKubernetesList> deletingExisting() {
-    return new KubernetesListOperationsImpl(client, config, namespace, null, false, fromServer, true, item, null);
+    return new KubernetesListOperationsImpl(client, config, namespace, null, DeletionPropagation.BACKGROUND, fromServer, true, item, null);
+  }
+
+  private List<HasMetadata> createItemsInKubernetesList(KubernetesList list) {
+    List<HasMetadata> createdItems = new ArrayList<>();
+    for (HasMetadata r : list.getItems()) {
+      HasMetadata created = create(r);
+      createdItems.add(created);
+    }
+    return createdItems;
   }
 }

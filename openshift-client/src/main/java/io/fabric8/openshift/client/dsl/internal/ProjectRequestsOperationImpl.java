@@ -15,18 +15,20 @@
  */
 package io.fabric8.openshift.client.dsl.internal;
 
-import io.fabric8.kubernetes.client.dsl.base.OperationContext;
-import io.fabric8.kubernetes.client.utils.URLUtils;
-import io.fabric8.kubernetes.client.utils.Utils;
-import okhttp3.OkHttpClient;
-import okhttp3.Request;
+import io.fabric8.kubernetes.api.model.ListOptions;
+import io.fabric8.kubernetes.api.model.ListOptionsBuilder;
 import io.fabric8.kubernetes.api.model.Status;
 import io.fabric8.kubernetes.client.KubernetesClientException;
+import io.fabric8.kubernetes.client.dsl.base.OperationContext;
 import io.fabric8.kubernetes.client.dsl.base.OperationSupport;
+import io.fabric8.kubernetes.client.utils.Utils;
 import io.fabric8.openshift.api.model.DoneableProjectRequest;
 import io.fabric8.openshift.api.model.ProjectRequest;
 import io.fabric8.openshift.client.OpenShiftConfig;
 import io.fabric8.openshift.client.dsl.ProjectRequestOperation;
+import okhttp3.HttpUrl;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
 
 import java.io.IOException;
 import java.net.MalformedURLException;
@@ -85,9 +87,19 @@ public class ProjectRequestsOperationImpl extends OperationSupport implements Pr
       } else {
         return handleCreate(updateApiVersion(getItem()), ProjectRequest.class);
       }
-    } catch (InterruptedException | ExecutionException | IOException e) {
+    }  catch (InterruptedException ie) {
+      Thread.currentThread().interrupt();
+      throw KubernetesClientException.launderThrowable(ie);
+    } catch (ExecutionException | IOException e) {
       throw KubernetesClientException.launderThrowable(e);
     }
+    
+  }
+
+
+  @Override
+  public ProjectRequest create(ProjectRequest resource) {
+    return create(new ProjectRequest[]{resource});
   }
 
   @Override
@@ -107,26 +119,57 @@ public class ProjectRequestsOperationImpl extends OperationSupport implements Pr
       URL requestUrl = getNamespacedUrl();
       Request.Builder requestBuilder = new Request.Builder().get().url(requestUrl);
       return handleResponse(requestBuilder, Status.class);
-    } catch (InterruptedException | ExecutionException | IOException e) {
+    }  catch (InterruptedException ie) {
+      Thread.currentThread().interrupt();
+      throw KubernetesClientException.launderThrowable(ie);
+    } catch (ExecutionException | IOException e) {
       throw KubernetesClientException.launderThrowable(e);
     }
   }
 
   @Override
   public Status list(Integer limitVal, String continueVal) {
+    return list(new ListOptionsBuilder().withLimit(Long.parseLong(limitVal.toString())).withContinue(continueVal).build());
+  }
+
+  @Override
+  public Status list(ListOptions listOptions) {
     try {
-      URL requestUrl = getNamespacedUrl();
-      if(limitVal != null) {
-        requestUrl = new URL(URLUtils.join(requestUrl.toString(), "?limit=" + limitVal.toString()));
-      } else if(continueVal != null) {
-        requestUrl = new URL(URLUtils.join(requestUrl.toString(), "?limit=" + limitVal.toString() + "&continue=" + continueVal));
+      HttpUrl.Builder urlBuilder = HttpUrl.get(getNamespacedUrl().toString()).newBuilder();
+      if(listOptions.getLimit() != null) {
+        urlBuilder.addQueryParameter("limit", listOptions.getLimit().toString());
       }
-      Request.Builder requestBuilder = new Request.Builder().get().url(requestUrl);
+      if(listOptions.getContinue() != null) {
+        urlBuilder.addQueryParameter("continue", listOptions.getContinue());
+      }
+
+      if (listOptions.getResourceVersion() != null) {
+        urlBuilder.addQueryParameter("resourceVersion", listOptions.getResourceVersion());
+      }
+
+      if (listOptions.getFieldSelector() != null) {
+        urlBuilder.addQueryParameter("fieldSelector", listOptions.getFieldSelector());
+      }
+
+      if (listOptions.getLabelSelector() != null) {
+        urlBuilder.addQueryParameter("labelSelector", listOptions.getLabelSelector());
+      }
+
+      if (listOptions.getTimeoutSeconds() != null) {
+        urlBuilder.addQueryParameter("timeoutSeconds", listOptions.getTimeoutSeconds().toString());
+      }
+
+      if (listOptions.getAllowWatchBookmarks() != null) {
+        urlBuilder.addQueryParameter("allowWatchBookmarks", listOptions.getAllowWatchBookmarks().toString());
+      }
+      Request.Builder requestBuilder = new Request.Builder().get().url(urlBuilder.build());
       return handleResponse(requestBuilder, Status.class);
-    } catch (InterruptedException | ExecutionException | IOException e) {
+    }  catch (InterruptedException ie) {
+      Thread.currentThread().interrupt();
+      throw KubernetesClientException.launderThrowable(ie);
+    } catch (ExecutionException | IOException e) {
       throw KubernetesClientException.launderThrowable(e);
     }
-
   }
 
   public ProjectRequest getItem() {

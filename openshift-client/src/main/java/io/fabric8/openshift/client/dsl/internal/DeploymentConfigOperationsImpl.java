@@ -15,19 +15,28 @@
  */
 package io.fabric8.openshift.client.dsl.internal;
 
+import io.fabric8.kubernetes.api.model.OwnerReference;
+import io.fabric8.kubernetes.api.model.apps.DoneableReplicaSet;
+import io.fabric8.kubernetes.api.model.apps.ReplicaSet;
+import io.fabric8.kubernetes.api.model.apps.ReplicaSetList;
+import io.fabric8.kubernetes.api.model.autoscaling.v1.Scale;
 import io.fabric8.kubernetes.client.Config;
-import io.fabric8.kubernetes.client.dsl.base.BaseOperation;
+import io.fabric8.kubernetes.client.dsl.LogWatch;
+import io.fabric8.kubernetes.client.dsl.RollableScalableResource;
 import io.fabric8.kubernetes.client.dsl.base.OperationContext;
+import io.fabric8.kubernetes.client.dsl.internal.apps.v1.ReplicaSetOperationsImpl;
 import io.fabric8.kubernetes.client.dsl.internal.RollingOperationContext;
+import io.fabric8.kubernetes.client.utils.KubernetesResourceUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.io.OutputStream;
+import java.io.Reader;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -35,8 +44,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import io.fabric8.kubernetes.client.KubernetesClientException;
-import io.fabric8.kubernetes.client.dsl.Reaper;
-import io.fabric8.kubernetes.client.dsl.internal.ReplicationControllerOperationsImpl;
 import io.fabric8.kubernetes.client.utils.Utils;
 import io.fabric8.openshift.api.model.DeploymentConfig;
 import io.fabric8.openshift.api.model.DeploymentConfigList;
@@ -53,7 +60,7 @@ public class DeploymentConfigOperationsImpl extends OpenShiftOperation<Deploymen
   private static final String DEPLOYMENT_CONFIG_REF = "openshift.io/deployment-config.name";
 
   public DeploymentConfigOperationsImpl(OkHttpClient client, Config config) {
-    this(new RollingOperationContext().withOkhttpClient(client).withConfig(config).withCascading(true));
+    this(new RollingOperationContext().withOkhttpClient(client).withConfig(config).withPropagationPolicy(DEFAULT_PROPAGATION_POLICY));
   }
 
   public DeploymentConfigOperationsImpl(RollingOperationContext context) {
@@ -61,7 +68,6 @@ public class DeploymentConfigOperationsImpl extends OpenShiftOperation<Deploymen
     this.type = DeploymentConfig.class;
     this.listType = DeploymentConfigList.class;
     this.doneableType = DoneableDeploymentConfig.class;
-    reaper = new DeploymentConfigReaper(this, client);
   }
 
   @Override
@@ -112,89 +118,6 @@ public class DeploymentConfigOperationsImpl extends OpenShiftOperation<Deploymen
     return deployment;
   }
 
-  private static class DeploymentConfigReaper implements Reaper {
-
-    private final DeploymentConfigOperationsImpl operation;
-    private final OkHttpClient client;
-
-    public DeploymentConfigReaper(DeploymentConfigOperationsImpl operation, OkHttpClient client) {
-      this.operation = operation;
-      this.client = client;
-    }
-
-    @Override
-    public boolean reap() {
-      DeploymentConfig deployment = operation.cascading(false).edit().editSpec().withReplicas(0).endSpec().done();
-
-      //TODO: These checks shouldn't be used as they are not realistic. We just use them to support mock/crud tests. Need to find a cleaner way to do so.
-      if (deployment.getStatus() != null) {
-        waitForObservedGeneration(deployment.getStatus().getObservedGeneration());
-      }
-
-      //We are deleting the DC before reaping the replication controller, because the RC's won't go otherwise.
-      Boolean reaped = operation.cascading(false).delete();
-
-      // Waiting for the DC to be completely deleted before removing the replication controller (error in Openshift 3.9)
-      waitForDeletion();
-
-      Map<String, String> selector = new HashMap<>();
-      selector.put(DEPLOYMENT_CONFIG_REF, deployment.getMetadata().getName());
-      if (selector != null && !selector.isEmpty()) {
-        Boolean deleted = new ReplicationControllerOperationsImpl(client, operation.getConfig())
-          .inNamespace(operation.namespace)
-          .withLabels(selector)
-          .delete();
-      }
-
-      return reaped;
-    }
-
-    private void waitForObservedGeneration(final long observedGeneration) {
-      final CountDownLatch countDownLatch = new CountDownLatch(1);
-
-      final Runnable deploymentPoller = () -> {
-        DeploymentConfig deployment = operation.getMandatory();
-        if (observedGeneration <= deployment.getStatus().getObservedGeneration()) {
-          countDownLatch.countDown();
-        }
-      };
-
-      ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
-      ScheduledFuture poller = executor.scheduleWithFixedDelay(deploymentPoller, 0, 10, TimeUnit.MILLISECONDS);
-      try {
-        countDownLatch.await(1, TimeUnit.MINUTES);
-        executor.shutdown();
-      } catch (InterruptedException e) {
-        poller.cancel(true);
-        executor.shutdown();
-        throw KubernetesClientException.launderThrowable(e);
-      }
-    }
-
-    private void waitForDeletion() {
-      final CountDownLatch countDownLatch = new CountDownLatch(1);
-
-      final Runnable deploymentPoller = () -> {
-        DeploymentConfig deployment = operation.get();
-        if (deployment == null) {
-          countDownLatch.countDown();
-        }
-      };
-
-      ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
-      ScheduledFuture poller = executor.scheduleWithFixedDelay(deploymentPoller, 0, 10, TimeUnit.MILLISECONDS);
-      try {
-        countDownLatch.await(1, TimeUnit.MINUTES);
-        executor.shutdown();
-      } catch (InterruptedException e) {
-        poller.cancel(true);
-        executor.shutdown();
-        throw KubernetesClientException.launderThrowable(e);
-      }
-    }
-
-  }
-
   @Override
   public DeploymentConfig scale(int count) {
     return scale(count, false);
@@ -208,6 +131,16 @@ public class DeploymentConfigOperationsImpl extends OpenShiftOperation<Deploymen
       deployment = getMandatory();
     }
     return deployment;
+  }
+
+  @Override
+  public Scale scale() {
+    return handleScale(null);
+  }
+
+  @Override
+  public Scale scale(Scale scale) {
+    return handleScale(scale);
   }
 
   /**
@@ -260,5 +193,66 @@ public class DeploymentConfigOperationsImpl extends OpenShiftOperation<Deploymen
         poller.cancel(true);
         executor.shutdown();
       }
+  }
+
+  public String getLog() {
+    return getLog(false);
+  }
+
+  public String getLog(Boolean isPretty) {
+    StringBuilder stringBuilder = new StringBuilder();
+    List<RollableScalableResource<ReplicaSet, DoneableReplicaSet>> rcList = doGetLog();
+    for (RollableScalableResource<ReplicaSet, DoneableReplicaSet> rcOperation : rcList) {
+      stringBuilder.append(rcOperation.getLog(isPretty));
+    }
+    return stringBuilder.toString();
+  }
+
+  private List<RollableScalableResource<ReplicaSet, DoneableReplicaSet>> doGetLog() {
+    List<RollableScalableResource<ReplicaSet, DoneableReplicaSet>> rcs = new ArrayList<>();
+    DeploymentConfig deploymentConfig = fromServer().get();
+    String rcUid = deploymentConfig.getMetadata().getUid();
+
+    ReplicaSetOperationsImpl rsOperations = new ReplicaSetOperationsImpl((RollingOperationContext) context);
+    ReplicaSetList rcList = rsOperations.withLabels(deploymentConfig.getMetadata().getLabels()).list();
+
+    for (ReplicaSet rs : rcList.getItems()) {
+      OwnerReference ownerReference = KubernetesResourceUtil.getControllerUid(rs);
+      if (ownerReference != null && ownerReference.getUid().equals(rcUid)) {
+        rcs.add(rsOperations.withName(rs.getMetadata().getName()));
+      }
+    }
+    return rcs;
+  }
+
+  /**
+   * Returns an unclosed Reader. It's the caller responsibility to close it.
+   * @return Reader
+   */
+  @Override
+  public Reader getLogReader() {
+    List<RollableScalableResource<ReplicaSet, DoneableReplicaSet>> podResources = doGetLog();
+    if (podResources.size() > 1) {
+      throw new KubernetesClientException("Reading logs is not supported for multicontainer jobs");
+    } else if (podResources.size() == 1) {
+      return podResources.get(0).getLogReader();
+    }
+    return null;
+  }
+
+  @Override
+  public LogWatch watchLog() {
+    return watchLog(null);
+  }
+
+  @Override
+  public LogWatch watchLog(OutputStream out) {
+    List<RollableScalableResource<ReplicaSet, DoneableReplicaSet>> podResources = doGetLog();
+    if (podResources.size() > 1) {
+      throw new KubernetesClientException("Watching logs is not supported for multicontainer jobs");
+    } else if (podResources.size() == 1) {
+      return podResources.get(0).watchLog(out);
+    }
+    return null;
   }
 }

@@ -16,14 +16,24 @@
 
 package io.fabric8.kubernetes.client.mock;
 
+import io.fabric8.kubernetes.api.model.DoneablePod;
+import io.fabric8.kubernetes.api.model.Status;
+import io.fabric8.kubernetes.api.model.StatusBuilder;
 import io.fabric8.kubernetes.client.ResourceNotFoundException;
+import io.fabric8.kubernetes.client.dsl.Applicable;
+import io.fabric8.kubernetes.client.dsl.NamespaceVisitFromServerGetWatchDeleteRecreateWaitApplicable;
+import io.fabric8.kubernetes.client.dsl.PodResource;
+import io.fabric8.kubernetes.client.dsl.base.WaitForConditionWatcher;
+import okhttp3.mockwebserver.RecordedRequest;
 import org.junit.Assert;
 import org.junit.Rule;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.migrationsupport.rules.EnableRuleMigrationSupport;
 
 import java.net.HttpURLConnection;
+import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -40,6 +50,8 @@ import io.fabric8.kubernetes.client.server.mock.KubernetesServer;
 
 import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.tuple;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -50,45 +62,86 @@ public class ResourceTest {
   @Rule
   public KubernetesServer server = new KubernetesServer();
 
+  @Test
+  void testCreateOrReplace() {
+    // Given
+    Pod pod1 = new PodBuilder().withNewMetadata().withName("pod1").withNamespace("test").and().build();
+    server.expect().post().withPath("/api/v1/namespaces/test/pods").andReturn(HttpURLConnection.HTTP_CREATED, pod1).once();
+    KubernetesClient client = server.getClient();
+
+    // When
+    HasMetadata response = client.resource(pod1).createOrReplace();
+
+    // Then
+    assertEquals(pod1, response);
+  }
+
+  @Test
+  void testCreateOrReplaceWhenCreateFails() {
+    // Given
+    Pod pod1 = new PodBuilder().withNewMetadata().withName("pod1").withNamespace("test").and().build();
+    server.expect().post().withPath("/api/v1/namespaces/test/pods").andReturn(HttpURLConnection.HTTP_BAD_REQUEST, pod1).once();
+    KubernetesClient client = server.getClient();
+    NamespaceVisitFromServerGetWatchDeleteRecreateWaitApplicable<Pod, Boolean> podOperation = client.resource(pod1);
+
+    // When
+    assertThrows(KubernetesClientException.class, podOperation::createOrReplace);
+  }
 
     @Test
-    public void testCreateOrReplace() {
-        Pod pod1 = new PodBuilder().withNewMetadata().withName("pod1").withNamespace("test").and().build();
+    void testCreateWithExplicitNamespace() {
+      Pod pod1 = new PodBuilder().withNewMetadata().withName("pod1").withNamespace("test").and().build();
 
-        server.expect().get().withPath("/api/v1/namespaces/test/pods/pod1").andReturn(404, "").once();
-        server.expect().post().withPath("/api/v1/namespaces/test/pods").andReturn(201, pod1).once();
+      server.expect().post().withPath("/api/v1/namespaces/ns1/pods").andReturn(HttpURLConnection.HTTP_CREATED, pod1).once();
 
-        KubernetesClient client = server.getClient();
-        HasMetadata response = client.resource(pod1).createOrReplace();
-        assertEquals(pod1, response);
+      KubernetesClient client = server.getClient();
+      HasMetadata response = client.resource(pod1).inNamespace("ns1").createOrReplace();
+      assertEquals(pod1, response);
     }
 
     @Test
-    public void testCreateWithExplicitNamespace() {
-        Pod pod1 = new PodBuilder().withNewMetadata().withName("pod1").withNamespace("test").and().build();
+    void testCreateOrReplaceWithDeleteExisting() throws Exception {
+      Pod pod1 = new PodBuilder().withNewMetadata().withName("pod1").withNamespace("test").and().build();
 
-        server.expect().get().withPath("/api/v1/namespaces/ns1/pods/pod1").andReturn(404, "").once();
-        server.expect().post().withPath("/api/v1/namespaces/ns1/pods").andReturn(201, pod1).once();
+      server.expect().post().withPath("/api/v1/namespaces/ns1/pods").andReturn(HttpURLConnection.HTTP_CONFLICT, pod1).once();
+      server.expect().delete().withPath("/api/v1/namespaces/ns1/pods/pod1").andReturn(HttpURLConnection.HTTP_OK, pod1).once();
+      server.expect().post().withPath("/api/v1/namespaces/ns1/pods").andReturn(HttpURLConnection.HTTP_CREATED, pod1).once();
 
-        KubernetesClient client = server.getClient();
-        HasMetadata response = client.resource(pod1).inNamespace("ns1").apply();
-        assertEquals(pod1, response);
-    }
+      KubernetesClient client = server.getClient();
+      HasMetadata response = client.resource(pod1).inNamespace("ns1").deletingExisting().createOrReplace();
+      assertEquals(pod1, response);
 
-    @Test
-    public void testRequire() {
-      Assertions.assertThrows(ResourceNotFoundException.class, () -> {
-        Pod pod1 = new PodBuilder().withNewMetadata().withName("pod1").withNamespace("test1").and().build();
-
-        server.expect().get().withPath("/api/v1/namespaces/ns1/pods/pod1").andReturn(HttpURLConnection.HTTP_NOT_FOUND, "").once();
-
-        KubernetesClient client = server.getClient();
-        client.pods().inNamespace("ns1").withName("pod1").require();
-      });
+      RecordedRequest request = server.getLastRequest();
+      assertEquals(3, server.getMockServer().getRequestCount());
+      assertEquals("/api/v1/namespaces/ns1/pods", request.getPath());
+      assertEquals("POST", request.getMethod());
     }
 
   @Test
-  public void testDelete() {
+  void testCreateOrReplaceWithDeleteExistingWithCreateFailed() {
+    // Given
+    Pod pod1 = new PodBuilder().withNewMetadata().withName("pod1").withNamespace("test").and().build();
+    server.expect().post().withPath("/api/v1/namespaces/ns1/pods").andReturn(HttpURLConnection.HTTP_CONFLICT, pod1).once();
+    server.expect().delete().withPath("/api/v1/namespaces/ns1/pods/pod1").andReturn(HttpURLConnection.HTTP_OK, pod1).once();
+    server.expect().post().withPath("/api/v1/namespaces/ns1/pods").andReturn(HttpURLConnection.HTTP_BAD_REQUEST, pod1).once();
+    KubernetesClient client = server.getClient();
+    Applicable<Pod> podOperation = client.resource(pod1).inNamespace("ns1").deletingExisting();
+
+    // When
+    assertThrows(KubernetesClientException.class, podOperation::createOrReplace);
+  }
+
+    @Test
+    void testRequire() {
+      server.expect().get().withPath("/api/v1/namespaces/ns1/pods/pod1").andReturn(HttpURLConnection.HTTP_NOT_FOUND, "").once();
+      KubernetesClient client = server.getClient();
+      PodResource<Pod, DoneablePod> podOp = client.pods().inNamespace("ns1").withName("pod1");
+
+      Assertions.assertThrows(ResourceNotFoundException.class, podOp::require);
+    }
+
+  @Test
+  void testDelete() {
     Pod pod1 = new PodBuilder().withNewMetadata().withName("pod1").withNamespace("test").and().build();
     Pod pod2 = new PodBuilder().withNewMetadata().withName("pod2").withNamespace("ns1").and().build();
     Pod pod3 = new PodBuilder().withNewMetadata().withName("pod3").withNamespace("any").and().build();
@@ -108,7 +161,7 @@ public class ResourceTest {
 
 
   @Test
-  public void testWatch() throws InterruptedException {
+  void testWatch() throws InterruptedException {
     Pod pod1 = new PodBuilder().withNewMetadata()
         .withName("pod1")
         .withResourceVersion("1")
@@ -143,7 +196,7 @@ public class ResourceTest {
 
 
   @Test
-  public void testWaitUntilReady() throws InterruptedException {
+  void testWaitUntilReady() throws InterruptedException {
     Pod pod1 = new PodBuilder().withNewMetadata()
       .withName("pod1")
       .withResourceVersion("1")
@@ -180,7 +233,7 @@ public class ResourceTest {
   }
 
   @Test
-  public void testWaitUntilExistsThenReady() throws InterruptedException {
+  void testWaitUntilExistsThenReady() throws InterruptedException {
     Pod pod1 = new PodBuilder().withNewMetadata()
       .withName("pod1")
       .withResourceVersion("1")
@@ -209,7 +262,7 @@ public class ResourceTest {
     // and again so that "periodicWatchUntilReady" successfully begins
     server.expect().get().withPath("/api/v1/namespaces/test/pods/pod1").andReturn(200, noReady).times(2);
 
-    server.expect().get().withPath("/api/v1/namespaces/test/pods?fieldSelector=metadata.name%3Dpod1&resourceVersion=1&watch=true").andUpgradeToWebSocket()
+    server.expect().get().withPath("/api/v1/namespaces/test/pods?fieldSelector=metadata.name%3Dpod1&watch=true").andUpgradeToWebSocket()
       .open()
       .waitFor(100).andEmit(new WatchEvent(ready, "MODIFIED"))
       .done()
@@ -221,7 +274,7 @@ public class ResourceTest {
   }
 
   @Test
-  public void testWaitUntilCondition() throws InterruptedException {
+  void testWaitUntilCondition() throws InterruptedException {
     Pod pod1 = new PodBuilder().withNewMetadata()
       .withName("pod1")
       .withResourceVersion("1")
@@ -271,14 +324,13 @@ public class ResourceTest {
     // at first the pod is non-ready
     server.expect().get().withPath("/api/v1/namespaces/test/pods/pod1").andReturn(200, noReady).times(2);
 
-    // then the pod becomes ready
-    server.expect().get().withPath("/api/v1/namespaces/test/pods/pod1").andReturn(200, ready).times(2);
-
-    // then the has the condition but not with the correct status
-    server.expect().get().withPath("/api/v1/namespaces/test/pods/pod1").andReturn(200, withConditionBeingFalse).times(1);
-
-    // finally the pod is in the desired state
-    server.expect().get().withPath("/api/v1/namespaces/test/pods/pod1").andReturn(200, withConditionBeingTrue).always();
+    server.expect().get().withPath("/api/v1/namespaces/test/pods?fieldSelector=metadata.name%3Dpod1&resourceVersion=1&watch=true").andUpgradeToWebSocket()
+      .open()
+      .waitFor(1000).andEmit(new WatchEvent(ready, "MODIFIED"))
+      .waitFor(2000).andEmit(new WatchEvent(withConditionBeingFalse, "MODIFIED"))
+      .waitFor(2500).andEmit(new WatchEvent(withConditionBeingTrue, "MODIFIED"))
+      .done()
+      .always();
 
     KubernetesClient client = server.getClient();
     Pod p = client.pods().withName("pod1").waitUntilCondition(
@@ -294,7 +346,191 @@ public class ResourceTest {
   }
 
   @Test
-  public void testCreateAndWaitUntilReady() throws InterruptedException {
+  void testRetryOnErrorEventDuringWaitReturnFromAPIIfMatch() throws InterruptedException {
+    Pod pod1 = new PodBuilder().withNewMetadata()
+      .withName("pod1")
+      .withResourceVersion("1")
+      .withNamespace("test").and().build();
+
+
+    Pod noReady = new PodBuilder(pod1).withNewStatus()
+      .addNewCondition()
+      .withType("Ready")
+      .withStatus("False")
+      .endCondition()
+      .endStatus()
+      .build();
+
+    Pod ready = new PodBuilder(pod1).withNewStatus()
+      .addNewCondition()
+      .withType("Ready")
+      .withStatus("True")
+      .endCondition()
+      .endStatus()
+      .build();
+
+    Status status = new StatusBuilder()
+      .withCode(HttpURLConnection.HTTP_FORBIDDEN)
+      .build();
+
+    // once not ready, to begin watch
+    server.expect().get().withPath("/api/v1/namespaces/test/pods/pod1").andReturn(200, noReady).once();
+    // once ready, after watch fails
+    server.expect().get().withPath("/api/v1/namespaces/test/pods/pod1").andReturn(200, ready).once();
+
+    server.expect().get().withPath("/api/v1/namespaces/test/pods?fieldSelector=metadata.name%3Dpod1&resourceVersion=1&watch=true").andUpgradeToWebSocket()
+      .open()
+      .waitFor(500).andEmit(new WatchEvent(status, "ERROR"))
+      .done()
+      .once();
+
+    KubernetesClient client = server.getClient();
+    Pod p = client.resource(noReady).waitUntilReady(5, TimeUnit.SECONDS);
+    Assert.assertTrue(Readiness.isPodReady(p));
+  }
+
+  @Test
+  void testRetryOnErrorEventDuringWait() throws InterruptedException {
+    Pod pod1 = new PodBuilder().withNewMetadata()
+      .withName("pod1")
+      .withResourceVersion("1")
+      .withNamespace("test").and().build();
+
+    Pod noReady = new PodBuilder(pod1).withNewStatus()
+      .addNewCondition()
+      .withType("Ready")
+      .withStatus("False")
+      .endCondition()
+      .endStatus()
+      .build();
+
+    Pod ready = new PodBuilder(pod1).withNewStatus()
+      .addNewCondition()
+      .withType("Ready")
+      .withStatus("True")
+      .endCondition()
+      .endStatus()
+      .build();
+
+    Status status = new StatusBuilder()
+      .withCode(HttpURLConnection.HTTP_FORBIDDEN)
+      .build();
+
+    // once not ready, to begin watch
+    server.expect().get().withPath("/api/v1/namespaces/test/pods/pod1").andReturn(200, noReady).times(2);
+
+    server.expect().get().withPath("/api/v1/namespaces/test/pods?fieldSelector=metadata.name%3Dpod1&resourceVersion=1&watch=true").andUpgradeToWebSocket()
+      .open()
+      .waitFor(500).andEmit(new WatchEvent(status, "ERROR"))
+      .done()
+      .once();
+
+    server.expect().get().withPath("/api/v1/namespaces/test/pods?fieldSelector=metadata.name%3Dpod1&resourceVersion=1&watch=true").andUpgradeToWebSocket()
+      .open()
+      .waitFor(500).andEmit(new WatchEvent(ready, "MODIFIED"))
+      .done()
+      .once();
+
+    KubernetesClient client = server.getClient();
+    Pod p = client.resource(noReady).waitUntilReady(5, TimeUnit.SECONDS);
+    Assert.assertTrue(Readiness.isPodReady(p));
+  }
+
+  @Test
+  void testSkipWatchIfAlreadyMatchingCondition() throws InterruptedException {
+    Pod pod1 = new PodBuilder().withNewMetadata()
+      .withName("pod1")
+      .withResourceVersion("1")
+      .withNamespace("test").and().build();
+
+
+    Pod noReady = new PodBuilder(pod1).withNewStatus()
+      .addNewCondition()
+      .withType("Ready")
+      .withStatus("False")
+      .endCondition()
+      .endStatus()
+      .build();
+
+    Pod ready = new PodBuilder(pod1).withNewStatus()
+      .addNewCondition()
+      .withType("Ready")
+      .withStatus("True")
+      .endCondition()
+      .endStatus()
+      .build();
+
+    // once not ready, to begin watch
+    server.expect().get().withPath("/api/v1/namespaces/test/pods/pod1").andReturn(200, ready).once();
+
+    KubernetesClient client = server.getClient();
+    Pod p = client.resource(noReady).waitUntilReady(5, TimeUnit.SECONDS);
+    Assert.assertTrue(Readiness.isPodReady(p));
+  }
+
+  @Test
+  void testDontRetryWatchOnHttpGone() throws InterruptedException {
+    Pod noReady = new PodBuilder().withNewMetadata()
+      .withName("pod1")
+      .withResourceVersion("1")
+      .withNamespace("test").and().withNewStatus()
+      .addNewCondition()
+      .withType("Ready")
+      .withStatus("False")
+      .endCondition()
+      .endStatus()
+      .build();
+
+    Status status = new StatusBuilder()
+      .withCode(HttpURLConnection.HTTP_GONE)
+      .build();
+
+    // once not ready, to begin watch
+    server.expect().get().withPath("/api/v1/namespaces/test/pods/pod1").andReturn(200, noReady).once();
+
+    server.expect().get().withPath("/api/v1/namespaces/test/pods?fieldSelector=metadata.name%3Dpod1&resourceVersion=1&watch=true").andUpgradeToWebSocket()
+      .open()
+      .waitFor(500).andEmit(new WatchEvent(status, "ERROR"))
+      .done()
+      .once();
+
+    KubernetesClient client = server.getClient();
+    try {
+      client.resource(noReady).waitUntilReady(5, TimeUnit.SECONDS);
+      fail("should have thrown KubernetesClientException");
+    } catch (KubernetesClientException e) {
+      assertTrue(e.getCause() instanceof WaitForConditionWatcher.WatchException);
+    }
+  }
+
+  @Test
+  void testWaitOnConditionDeleted() throws InterruptedException {
+    Pod ready = new PodBuilder().withNewMetadata()
+      .withName("pod1")
+      .withResourceVersion("1")
+      .withNamespace("test").and().withNewStatus()
+      .addNewCondition()
+      .withType("Ready")
+      .withStatus("True")
+      .endCondition()
+      .endStatus()
+      .build();
+
+    server.expect().get().withPath("/api/v1/namespaces/test/pods/pod1").andReturn(200, ready).once();
+
+    server.expect().get().withPath("/api/v1/namespaces/test/pods?fieldSelector=metadata.name%3Dpod1&resourceVersion=1&watch=true").andUpgradeToWebSocket()
+      .open()
+      .waitFor(1000).andEmit(new WatchEvent(ready, "DELETED"))
+      .done()
+      .once();
+
+    KubernetesClient client = server.getClient();
+    Pod p = client.pods().withName("pod1").waitUntilCondition(Objects::isNull,8, TimeUnit.SECONDS);
+    assertNull(p);
+  }
+
+  @Test
+  void testCreateAndWaitUntilReady() throws InterruptedException {
     Pod pod1 = new PodBuilder().withNewMetadata()
       .withName("pod1")
       .withResourceVersion("1")
@@ -324,7 +560,7 @@ public class ResourceTest {
 
     server.expect().get().withPath("/api/v1/namespaces/test/pods?fieldSelector=metadata.name%3Dpod1&resourceVersion=1&watch=true").andUpgradeToWebSocket()
       .open()
-      .waitFor(100).andEmit(new WatchEvent(ready, "MODIFIED"))
+      .waitFor(1000).andEmit(new WatchEvent(ready, "MODIFIED"))
       .done()
       .always();
 
@@ -334,7 +570,7 @@ public class ResourceTest {
   }
 
   @Test
-  public void testFromServerGet() {
+  void testFromServerGet() {
     Pod pod = new PodBuilder().withNewMetadata()
       .withName("pod1")
       .withNamespace("test")
@@ -348,5 +584,38 @@ public class ResourceTest {
     HasMetadata response = client.resource(pod).fromServer().get();
     assertEquals(pod, response);
   }
+
+  @Test
+  @DisplayName("resource().waitUntilCondition(), resource forced to be reloaded from server even if condition is met by local version")
+  void testFromServerWaitUntilConditionAlwaysGetsResourceFromServer() throws Exception {
+    // Given
+    final Pod conditionNotMetPod = new PodBuilder().withNewMetadata()
+      .withName("pod")
+      .withNamespace("test")
+      .addToLabels("CONDITION", "NOT_MET")
+      .endMetadata().build();
+    final Pod conditionMetPod = new PodBuilder().withNewMetadata()
+      .withName("pod")
+      .withNamespace("test")
+      .withResourceVersion("1")
+      .addToLabels("CONDITION", "MET")
+      .endMetadata()
+      .build();
+    server.expect().get().withPath("/api/v1/namespaces/test/pods/pod").andReturn(200, conditionNotMetPod).once();
+    server.expect().get().withPath("/api/v1/namespaces/test/pods?fieldSelector=metadata.name%3Dpod&watch=true")
+      .andUpgradeToWebSocket().open()
+      .immediately().andEmit(new WatchEvent(conditionNotMetPod, "MODIFIED"))
+      .waitFor(10).andEmit(new WatchEvent(conditionMetPod, "MODIFIED"))
+      .done()
+      .once();
+    // When
+    HasMetadata response = server.getClient()
+      .resource(new PodBuilder(conditionMetPod).build())
+      .waitUntilCondition(p -> "MET".equals(p.getMetadata().getLabels().get("CONDITION")), 1, TimeUnit.SECONDS);
+    // Then
+    assertEquals(conditionMetPod, response);
+    assertEquals(2, server.getMockServer().getRequestCount());
+  }
+
 }
 

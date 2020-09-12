@@ -15,6 +15,8 @@
  */
 package io.fabric8.kubernetes.client.handlers;
 
+import io.fabric8.kubernetes.api.model.DeletionPropagation;
+import io.fabric8.kubernetes.api.model.ListOptions;
 import io.fabric8.kubernetes.client.Watch;
 import io.fabric8.kubernetes.client.Watcher;
 import java.util.function.Predicate;
@@ -42,9 +44,11 @@ public class KubernetesListHandler implements ResourceHandler<KubernetesList, Ku
 
   private static final Logger LOGGER = LoggerFactory.getLogger(KubernetesListHandler.class);
 
+  private static final String KIND = new KubernetesList().getKind();
+  
   @Override
   public String getKind() {
-    return Service.class.getSimpleName();
+    return KIND;
   }
 
   @Override
@@ -54,7 +58,7 @@ public class KubernetesListHandler implements ResourceHandler<KubernetesList, Ku
 
   @Override
   public KubernetesList create(OkHttpClient client, Config config, String namespace, KubernetesList item) {
-    return new KubernetesListOperationsImpl(client, config, namespace, null, true, false, false, item, null).create();
+    return new KubernetesListOperationsImpl(client, config, namespace, null, DeletionPropagation.BACKGROUND, false, false, item, null).create();
   }
 
   @Override
@@ -93,8 +97,8 @@ public class KubernetesListHandler implements ResourceHandler<KubernetesList, Ku
   }
 
   @Override
-  public Boolean delete(OkHttpClient client, Config config, String namespace, Boolean cascading, KubernetesList item) {
-    return new KubernetesListOperationsImpl(client, config, namespace, null, cascading, false, false, item, null).delete(item);
+  public Boolean delete(OkHttpClient client, Config config, String namespace, DeletionPropagation propagationPolicy, KubernetesList item) {
+    return new KubernetesListOperationsImpl(client, config, namespace, null, propagationPolicy, false, false, item, null).delete(item);
   }
 
   @Override
@@ -104,6 +108,11 @@ public class KubernetesListHandler implements ResourceHandler<KubernetesList, Ku
 
   @Override
   public Watch watch(OkHttpClient client, Config config, String namespace, KubernetesList item, String resourceVersion, Watcher<KubernetesList> watcher) {
+    throw new UnsupportedOperationException("Watch is not supported on KubernetesList.");
+  }
+
+  @Override
+  public Watch watch(OkHttpClient client, Config config, String namespace, KubernetesList item, ListOptions listOptions, Watcher<KubernetesList> watcher) {
     throw new UnsupportedOperationException("Watch is not supported on KubernetesList.");
   }
 

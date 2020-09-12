@@ -42,6 +42,7 @@ public class BackwardsCompatibilityInterceptor implements Interceptor {
   private static final Pattern NAMESPACED_URL_PATTERN = Pattern.compile("[^ ]+/apis/(" + NAME_REGEX + ")/(" + NAME_REGEX + ")/namespaces/" + NAME_REGEX + "/(" + NAME_REGEX + ")[^ ]*");
   private static final Map<ResourceKey, ResourceKey> notFoundTransformations = new HashMap<>();
   private static final Map<ResourceKey, ResourceKey> badRequestTransformations = new HashMap<>();
+  private static final Map<String, ResourceKey> openshiftOAPITransformations = new HashMap<>();
 
   private static final Map<Integer, Map<ResourceKey, ResourceKey>> responseCodeToTransformations = new HashMap<>();
 
@@ -107,17 +108,33 @@ public class BackwardsCompatibilityInterceptor implements Interceptor {
     notFoundTransformations.put(new ResourceKey("ClusterRoleBinding", "clusterrolebindings", "rbac.authorization.k8s.io", "v1"), new ResourceKey("ClusterRoleBinding", "clusterrolebindings", "rbac.authorization.k8s.io", "v1beta1"));
     notFoundTransformations.put(new ResourceKey("ClusterRole", "clusterroles", "rbac.authorization.k8s.io", "v1"), new ResourceKey("ClusterRole", "clusterroles", "rbac.authorization.k8s.io", "v1beta1"));
     notFoundTransformations.put(new ResourceKey("CronJob", "cronjobs", "batch", "v1beta1"), new ResourceKey("CronJob", "cronjob", "batch", "v2alpha1"));
+    notFoundTransformations.put(new ResourceKey("Template", "template", "", "v1"), new ResourceKey("Template", "template", "template.openshift.io", "v1"));
 
     badRequestTransformations.put(new ResourceKey("Deployment", "deployments", "apps", "v1beta1"), new ResourceKey("Deployment", "deployments", "extensions", "v1beta1"));
 
     responseCodeToTransformations.put(400, badRequestTransformations);
     responseCodeToTransformations.put(404, notFoundTransformations);
+
+    /**
+     * OpenShift versions prior to 3.10 use the /oapi endpoint for Openshift specific resources.
+     * However, since 3.10 /apis/{group} is being used. This has been removed completely in 4.x
+     * versions of OpenShift. Hence, this code is to handle those cases.
+     */
+    openshiftOAPITransformations.put("routes", new ResourceKey("Route", "routes", "route.openshift.io", "v1"));
+    openshiftOAPITransformations.put("templates", new ResourceKey("Template", "templates", "template.openshift.io", "v1"));
+    openshiftOAPITransformations.put("buildconfigs", new ResourceKey("BuildConfig", "buildconfigs", "build.openshift.io", "v1"));
+    openshiftOAPITransformations.put("deploymentconfigs", new ResourceKey("DeploymentConfig", "deploymentconfigs", "apps.openshift.io", "v1"));
+    openshiftOAPITransformations.put("imagestreams", new ResourceKey("ImageStream", "imagestreams", "image.openshift.io", "v1"));
+    openshiftOAPITransformations.put("imagestreamtags", new ResourceKey("ImageStream", "imagestreamtags", "image.openshift.io", "v1"));
+    openshiftOAPITransformations.put("securitycontextconstraints", new ResourceKey("SecurityContextConstraints", "securitycontextconstraints", "security.openshift.io", "v1"));
 }
 
   public Response intercept(Chain chain) throws IOException {
     Request request = chain.request();
     Response response = chain.proceed(request);
-    if (!response.isSuccessful() && responseCodeToTransformations.keySet().contains(response.code())) {
+    if (isOpenshiftApiRequest(request)) {
+      return handleOpenshiftRequests(request, response, chain);
+    } else if (!response.isSuccessful() && responseCodeToTransformations.keySet().contains(response.code())) {
       String url = request.url().toString();
       Matcher matcher = getMatcher(url);
       ResourceKey key = getKey(matcher);
@@ -129,21 +146,7 @@ public class BackwardsCompatibilityInterceptor implements Interceptor {
             .replace(matcher.start(API_GROUP), matcher.end(API_GROUP), target.group)
             .toString();
 
-        Request.Builder newRequest = request.newBuilder()
-          .url(newUrl);
-
-        Buffer buffer = new Buffer();
-        if (request.body() != null && !request.method().equalsIgnoreCase(PATCH)) {
-          request.body().writeTo(buffer);
-            Object object = Serialization.unmarshal(buffer.inputStream());
-          if (object instanceof HasMetadata) {
-            HasMetadata h = (HasMetadata) object;
-            h.setApiVersion(target.group + "/" + target.version);
-            newRequest = newRequest.method(request.method(), RequestBody.create(OperationSupport.JSON, Serialization.asJson(h)));
-          }
-        }
-
-        return chain.proceed(newRequest.build());
+        return handleNewRequestAndProceed(request, newUrl, target, chain);
       }
     }
     return response;
@@ -164,5 +167,80 @@ public class BackwardsCompatibilityInterceptor implements Interceptor {
 
   private static ResourceKey getKey(Matcher m) {
     return m != null ? new ResourceKey(null, m.group(PATH), m.group(API_GROUP), m.group(API_VERSION)) : null;
+  }
+
+  private static Response handleOpenshiftRequests(Request request, Response response, Chain chain) throws IOException{
+    if (!response.isSuccessful()) {
+      ResourceKey target = getResourceKeyFromRequest(request);
+      if (target != null) {
+        String requestUrl = request.url().toString();
+        requestUrl = isOpenShift4Request(requestUrl) ?
+          convertToOpenShiftOapiUrl(requestUrl, target) :
+          convertToOpenShift4Url(requestUrl, target);
+        return handleNewRequestAndProceed(request, requestUrl, target, chain);
+      }
+    }
+    return response;
+  }
+
+  private static String convertToOpenShift4Url(String requestUrl, ResourceKey target) {
+    return requestUrl.replace("/oapi", "/apis/" + target.getGroup());
+  }
+
+  private static String convertToOpenShiftOapiUrl(String requestUrl, ResourceKey target) {
+    return requestUrl.replace("/apis/" + target.getGroup() + "/" + target.getVersion(), "/oapi/v1");
+  }
+
+  private static Response handleNewRequestAndProceed(Request request, String newUrl, ResourceKey target, Chain chain) throws IOException {
+    Request.Builder newRequest = request.newBuilder()
+      .url(newUrl);
+
+    if (request.body() != null && !request.method().equalsIgnoreCase(PATCH)) {
+      try (Buffer buffer = new Buffer()) {
+        request.body().writeTo(buffer);
+
+        Object object = Serialization.unmarshal(buffer.inputStream());
+        if (object instanceof HasMetadata) {
+          HasMetadata h = (HasMetadata) object;
+          if (target != null) {
+            h.setApiVersion(target.group + "/" + target.version);
+          }
+          newRequest = newRequest.method(request.method(), RequestBody.create(OperationSupport.JSON, Serialization.asJson(h)));
+        }
+      }
+    }
+
+    return chain.proceed(newRequest.build());
+  }
+
+  private static boolean isOpenshiftApiRequest(Request request) {
+    if (request != null) {
+      String requestUrl = request.url().toString();
+      return isOpenshift3OapiRequest(requestUrl) || isOpenShift4Request(requestUrl);
+    }
+    return false;
+  }
+
+  private static boolean isOpenShift4Request(String requestUrl) {
+    return requestUrl.contains(".openshift.io");
+  }
+
+  private static boolean isOpenshift3OapiRequest(String requestUrl) {
+    return requestUrl.contains("oapi");
+  }
+
+  private static ResourceKey getResourceKeyFromRequest(Request request) {
+    String requestUrl = request.url().toString();
+    String resourcePath;
+    String[] parts = requestUrl.split("/");
+    if (parts.length > 2) {
+      if (request.method().equalsIgnoreCase("POST")) {
+        resourcePath = parts[parts.length - 1];
+      } else {
+        resourcePath = parts[parts.length - 2];
+      }
+      return openshiftOAPITransformations.get(resourcePath);
+    }
+    return null;
   }
 }

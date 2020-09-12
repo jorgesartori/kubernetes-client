@@ -34,7 +34,6 @@ import java.io.OutputStream;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
 import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
@@ -136,6 +135,7 @@ public class LogWatchCallback implements LogWatch, Callback, AutoCloseable {
         }
 
         LOGGER.error("Log Callback Failure.", ioe);
+        cleanUp();
         //We only need to queue startup failures.
         if (!started.get()) {
             queue.add(ioe);
@@ -150,10 +150,16 @@ public class LogWatchCallback implements LogWatch, Callback, AutoCloseable {
            } catch (IOException e) {
                throw KubernetesClientException.launderThrowable(e);
            }
-       }, () -> response.close());
+       }, () -> {
+         cleanUp();
+         response.close();
+       });
+
+      if (!executorService.isShutdown()) {
         executorService.submit(pumper);
         started.set(true);
         queue.add(true);
+      }
 
     }
 }

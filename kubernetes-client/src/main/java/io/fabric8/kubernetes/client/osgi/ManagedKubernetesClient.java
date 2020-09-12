@@ -16,11 +16,16 @@
 
 package io.fabric8.kubernetes.client.osgi;
 
+import io.fabric8.kubernetes.api.model.APIService;
+import io.fabric8.kubernetes.api.model.APIServiceList;
+import io.fabric8.kubernetes.api.model.Binding;
 import io.fabric8.kubernetes.api.model.ComponentStatus;
 import io.fabric8.kubernetes.api.model.ComponentStatusList;
 import io.fabric8.kubernetes.api.model.ConfigMap;
 import io.fabric8.kubernetes.api.model.ConfigMapList;
 import io.fabric8.kubernetes.api.model.Doneable;
+import io.fabric8.kubernetes.api.model.DoneableAPIService;
+import io.fabric8.kubernetes.api.model.DoneableBinding;
 import io.fabric8.kubernetes.api.model.DoneableComponentStatus;
 import io.fabric8.kubernetes.api.model.DoneableConfigMap;
 import io.fabric8.kubernetes.api.model.DoneableEndpoints;
@@ -64,14 +69,24 @@ import io.fabric8.kubernetes.api.model.SecretList;
 import io.fabric8.kubernetes.api.model.ServiceAccount;
 import io.fabric8.kubernetes.api.model.ServiceAccountList;
 import io.fabric8.kubernetes.api.model.ServiceList;
-import io.fabric8.kubernetes.api.model.apiextensions.CustomResourceDefinition;
-import io.fabric8.kubernetes.api.model.apiextensions.CustomResourceDefinitionList;
-import io.fabric8.kubernetes.api.model.apiextensions.DoneableCustomResourceDefinition;
+import io.fabric8.kubernetes.api.model.apiextensions.v1beta1.CustomResourceDefinition;
+import io.fabric8.kubernetes.api.model.apiextensions.v1beta1.CustomResourceDefinitionList;
+import io.fabric8.kubernetes.api.model.apiextensions.v1beta1.DoneableCustomResourceDefinition;
+import io.fabric8.kubernetes.api.model.certificates.CertificateSigningRequest;
+import io.fabric8.kubernetes.api.model.certificates.CertificateSigningRequestList;
+import io.fabric8.kubernetes.api.model.certificates.DoneableCertificateSigningRequest;
+import io.fabric8.kubernetes.api.model.authentication.DoneableTokenReview;
+import io.fabric8.kubernetes.api.model.authentication.TokenReview;
+import io.fabric8.kubernetes.api.model.coordination.v1.DoneableLease;
+import io.fabric8.kubernetes.api.model.coordination.v1.Lease;
+import io.fabric8.kubernetes.api.model.coordination.v1.LeaseList;
 import io.fabric8.kubernetes.client.Adapters;
+import io.fabric8.kubernetes.client.AdmissionRegistrationAPIGroupDSL;
 import io.fabric8.kubernetes.client.Config;
 import io.fabric8.kubernetes.client.ConfigBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.NamespacedKubernetesClient;
+import io.fabric8.kubernetes.client.OAuthTokenProvider;
 import io.fabric8.kubernetes.client.ExtensionAdapter;
 import io.fabric8.kubernetes.client.BaseClient;
 import io.fabric8.kubernetes.client.DefaultKubernetesClient;
@@ -79,12 +94,16 @@ import io.fabric8.kubernetes.client.ResourceHandler;
 import io.fabric8.kubernetes.client.RequestConfig;
 import io.fabric8.kubernetes.client.Handlers;
 import io.fabric8.kubernetes.client.VersionInfo;
+import io.fabric8.kubernetes.client.dsl.ApiextensionsAPIGroupDSL;
 import io.fabric8.kubernetes.client.dsl.AppsAPIGroupDSL;
+import io.fabric8.kubernetes.client.dsl.AuthorizationAPIGroupDSL;
 import io.fabric8.kubernetes.client.dsl.AutoscalingAPIGroupDSL;
 import io.fabric8.kubernetes.client.dsl.BatchAPIGroupDSL;
+import io.fabric8.kubernetes.client.dsl.Createable;
 import io.fabric8.kubernetes.client.dsl.ExtensionsAPIGroupDSL;
 import io.fabric8.kubernetes.client.dsl.FunctionCallable;
 import io.fabric8.kubernetes.client.dsl.KubernetesListMixedOperation;
+import io.fabric8.kubernetes.client.dsl.MetricAPIGroupDSL;
 import io.fabric8.kubernetes.client.dsl.MixedOperation;
 import io.fabric8.kubernetes.client.dsl.NamespaceListVisitFromServerGetDeleteRecreateWaitApplicable;
 import io.fabric8.kubernetes.client.dsl.NamespaceVisitFromServerGetWatchDeleteRecreateWaitApplicable;
@@ -100,9 +119,13 @@ import io.fabric8.kubernetes.client.dsl.SchedulingAPIGroupDSL;
 import io.fabric8.kubernetes.client.dsl.ServiceResource;
 import io.fabric8.kubernetes.client.dsl.SettingsAPIGroupDSL;
 import io.fabric8.kubernetes.client.dsl.StorageAPIGroupDSL;
-import io.fabric8.kubernetes.client.dsl.SubjectAccessReviewDSL;
+import io.fabric8.kubernetes.client.dsl.V1APIGroupDSL;
 import io.fabric8.kubernetes.client.dsl.base.CustomResourceDefinitionContext;
 import io.fabric8.kubernetes.client.dsl.internal.RawCustomResourceOperationsImpl;
+import io.fabric8.kubernetes.client.extended.leaderelection.LeaderElectorBuilder;
+import io.fabric8.kubernetes.client.extended.run.RunConfigBuilder;
+import io.fabric8.kubernetes.client.extended.run.RunOperations;
+import io.fabric8.kubernetes.client.informers.SharedInformerFactory;
 import org.apache.felix.scr.annotations.Activate;
 import org.apache.felix.scr.annotations.Component;
 import org.apache.felix.scr.annotations.ConfigurationPolicy;
@@ -110,6 +133,7 @@ import org.apache.felix.scr.annotations.Deactivate;
 import org.apache.felix.scr.annotations.Reference;
 import org.apache.felix.scr.annotations.ReferenceCardinality;
 import org.apache.felix.scr.annotations.ReferencePolicy;
+import org.apache.felix.scr.annotations.ReferencePolicyOption;
 import org.apache.felix.scr.annotations.References;
 import org.apache.felix.scr.annotations.Service;
 
@@ -117,6 +141,7 @@ import java.io.InputStream;
 import java.net.URL;
 import java.util.Collection;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
 
 import static io.fabric8.kubernetes.client.Config.*;
 
@@ -124,11 +149,14 @@ import static io.fabric8.kubernetes.client.Config.*;
 @Service({KubernetesClient.class,NamespacedKubernetesClient.class})
 @References({
   @Reference(referenceInterface = io.fabric8.kubernetes.client.ResourceHandler.class, cardinality = ReferenceCardinality.OPTIONAL_MULTIPLE, policy = ReferencePolicy.DYNAMIC, bind = "bindResourceHandler", unbind = "unbindResourceHandler"),
-  @Reference(referenceInterface = ExtensionAdapter.class, cardinality = ReferenceCardinality.OPTIONAL_MULTIPLE, policy = ReferencePolicy.DYNAMIC, bind = "bindExtensionAdapter", unbind = "unbindExtensionAdapter")
+  @Reference(referenceInterface = ExtensionAdapter.class, cardinality = ReferenceCardinality.OPTIONAL_MULTIPLE, policy = ReferencePolicy.DYNAMIC, bind = "bindExtensionAdapter", unbind = "unbindExtensionAdapter"),
+  @Reference(referenceInterface = OAuthTokenProvider.class ,cardinality = ReferenceCardinality.OPTIONAL_UNARY, policyOption = ReferencePolicyOption.GREEDY, bind = "bindOAuthTokenProvider", unbind="unbindOAuthTokenProvider")
 })
 public class ManagedKubernetesClient extends BaseClient implements NamespacedKubernetesClient {
 
   private NamespacedKubernetesClient delegate;
+
+  private OAuthTokenProvider provider;
 
   @Activate
   public void activate(Map<String, Object> properties) {
@@ -213,6 +241,9 @@ public class ManagedKubernetesClient extends BaseClient implements NamespacedKub
     if (properties.containsKey(KUBERNETES_KEYSTORE_PASSPHRASE_PROPERTY)) {
       builder.withKeyStorePassphrase((String) properties.get(KUBERNETES_KEYSTORE_PASSPHRASE_PROPERTY));
     }
+    if (provider != null ) {
+      builder.withOauthTokenProvider(provider);
+    }
 
     delegate = new DefaultKubernetesClient(builder.build());
   }
@@ -266,6 +297,10 @@ public class ManagedKubernetesClient extends BaseClient implements NamespacedKub
     return delegate.endpoints();
   }
 
+  public MixedOperation<Binding, KubernetesResourceList<Binding>, DoneableBinding, Resource<Binding, DoneableBinding>> bindings() {
+    return delegate.bindings();
+  }
+
   public MixedOperation<Pod, PodList, DoneablePod, PodResource<Pod, DoneablePod>> pods() {
     return delegate.pods();
   }
@@ -280,6 +315,11 @@ public class ManagedKubernetesClient extends BaseClient implements NamespacedKub
 
   public MixedOperation<ServiceAccount, ServiceAccountList, DoneableServiceAccount, Resource<ServiceAccount, DoneableServiceAccount>> serviceAccounts() {
     return delegate.serviceAccounts();
+  }
+
+  @Override
+  public MixedOperation<APIService, APIServiceList, DoneableAPIService, Resource<APIService, DoneableAPIService>> apiServices() {
+    return delegate.apiServices();
   }
 
   public NonNamespaceOperation<PersistentVolume, PersistentVolumeList, DoneablePersistentVolume, Resource<PersistentVolume, DoneablePersistentVolume>> persistentVolumes() {
@@ -306,11 +346,6 @@ public class ManagedKubernetesClient extends BaseClient implements NamespacedKub
 
   public NonNamespaceOperation<Node, NodeList, DoneableNode, Resource<Node, DoneableNode>> nodes() {
     return delegate.nodes();
-  }
-
-  @Override
-  public SubjectAccessReviewDSL subjectAccessReviewAuth() {
-    return delegate.subjectAccessReviewAuth();
   }
 
   public MixedOperation<PersistentVolumeClaim, PersistentVolumeClaimList, DoneablePersistentVolumeClaim, Resource<PersistentVolumeClaim, DoneablePersistentVolumeClaim>> persistentVolumeClaims() {
@@ -345,6 +380,16 @@ public class ManagedKubernetesClient extends BaseClient implements NamespacedKub
   }
 
   @Override
+  public V1APIGroupDSL v1() {
+    return delegate.v1();
+  }
+
+  @Override
+  public AdmissionRegistrationAPIGroupDSL admissionRegistration() {
+    return delegate.admissionRegistration();
+  }
+
+  @Override
   public AppsAPIGroupDSL apps() {
     return delegate.apps();
   }
@@ -371,6 +416,9 @@ public class ManagedKubernetesClient extends BaseClient implements NamespacedKub
   public BatchAPIGroupDSL batch() { return delegate.batch(); }
 
   @Override
+  public MetricAPIGroupDSL top() { return delegate.top(); }
+
+  @Override
   public PolicyAPIGroupDSL policy() { return delegate.policy(); }
 
   @Override
@@ -382,18 +430,63 @@ public class ManagedKubernetesClient extends BaseClient implements NamespacedKub
   }
 
   @Override
-  public <T extends HasMetadata, L extends KubernetesResourceList, D extends Doneable<T>> MixedOperation<T, L, D, Resource<T, D>> customResources(CustomResourceDefinition crd, Class<T> resourceType, Class<L> listClass, Class<D> doneClass) {
+  public ApiextensionsAPIGroupDSL apiextensions() {
+    return delegate.apiextensions();
+  }
+
+  @Override
+  public NonNamespaceOperation<CertificateSigningRequest, CertificateSigningRequestList, DoneableCertificateSigningRequest, Resource<CertificateSigningRequest, DoneableCertificateSigningRequest>> certificateSigningRequests() {
+    return delegate.certificateSigningRequests();
+  }
+
+  @Override
+  public AuthorizationAPIGroupDSL authorization() {
+    return delegate.authorization();
+  }
+
+  @Override
+  public Createable<TokenReview, TokenReview, DoneableTokenReview> tokenReviews() {
+    return delegate.tokenReviews();
+  }
+
+  @Override
+  public <T extends HasMetadata, L extends KubernetesResourceList<T>, D extends Doneable<T>> MixedOperation<T, L, D, Resource<T, D>> customResources(CustomResourceDefinitionContext crdContext, Class<T> resourceType, Class<L> listClass, Class<D> doneClass) {
+    return delegate.customResources(crdContext, resourceType, listClass, doneClass);
+  }
+
+  @Override
+  public <T extends HasMetadata, L extends KubernetesResourceList<T>, D extends Doneable<T>> MixedOperation<T, L, D, Resource<T, D>> customResources(CustomResourceDefinition crd, Class<T> resourceType, Class<L> listClass, Class<D> doneClass) {
     return delegate.customResources(crd, resourceType, listClass, doneClass);
   }
 
   @Override
-  public <T extends HasMetadata, L extends KubernetesResourceList, D extends Doneable<T>> MixedOperation<T, L, D, Resource<T, D>> customResource(CustomResourceDefinition crd, Class<T> resourceType, Class<L> listClass, Class<D> doneClass) {
+  public <T extends HasMetadata, L extends KubernetesResourceList<T>, D extends Doneable<T>> MixedOperation<T, L, D, Resource<T, D>> customResource(CustomResourceDefinition crd, Class<T> resourceType, Class<L> listClass, Class<D> doneClass) {
     return customResources(crd, resourceType, listClass, doneClass);
   }
 
   @Override
   public RawCustomResourceOperationsImpl customResource(CustomResourceDefinitionContext customResourceDefinition) {
     return delegate.customResource(customResourceDefinition);
+  }
+
+  @Override
+  public SharedInformerFactory informers() {
+    return delegate.informers();
+  }
+
+  @Override
+  public SharedInformerFactory informers(ExecutorService executorService) {
+    return delegate.informers(executorService);
+  }
+
+  @Override
+  public LeaderElectorBuilder<NamespacedKubernetesClient> leaderElector() {
+    return delegate.leaderElector();
+  }
+
+  @Override
+  public MixedOperation<Lease, LeaseList, DoneableLease, Resource<Lease, DoneableLease>> leases() {
+    return delegate.leases();
   }
 
   @Override
@@ -442,6 +535,16 @@ public class ManagedKubernetesClient extends BaseClient implements NamespacedKub
     Adapters.unregister(adapter);
   }
 
+  public void bindOAuthTokenProvider(OAuthTokenProvider provider) {
+      this.provider = provider;
+  }
+
+  public void unbindOAuthTokenProvider(OAuthTokenProvider provider) {
+      if ( this.provider == provider ) {
+          this.provider = null;
+      }
+  }
+
   @Override
   public NamespacedKubernetesClient inAnyNamespace() {
     return delegate.inAnyNamespace();
@@ -455,5 +558,10 @@ public class ManagedKubernetesClient extends BaseClient implements NamespacedKub
   @Override
   public FunctionCallable<NamespacedKubernetesClient> withRequestConfig(RequestConfig requestConfig) {
     return delegate.withRequestConfig(requestConfig);
+  }
+
+  @Override
+  public RunOperations run() {
+    return new RunOperations(httpClient, getConfiguration(), getNamespace(), new RunConfigBuilder());
   }
 }

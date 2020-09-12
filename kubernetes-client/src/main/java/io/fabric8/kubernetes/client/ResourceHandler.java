@@ -16,10 +16,12 @@
 
 package io.fabric8.kubernetes.client;
 
-
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
+
+import io.fabric8.kubernetes.api.model.DeletionPropagation;
+import io.fabric8.kubernetes.api.model.ListOptions;
 import okhttp3.OkHttpClient;
 import io.fabric8.kubernetes.api.builder.VisitableBuilder;
 
@@ -117,11 +119,11 @@ public interface ResourceHandler<T, V extends VisitableBuilder<T, V>> {
    * @param client        An instance of the http client.
    * @param config        The client config.
    * @param namespace     The target namespace.
-   * @param cascading     Whether deletion needs to be cascading or not
+   * @param propagationPolicy  Whether and how garbage collection will be performed.
    * @param item          The resource to delete.
    * @return              The true if the resource was successfully deleted.
    */
-  Boolean delete(OkHttpClient client, Config config, String namespace, Boolean cascading, T item);
+  Boolean delete(OkHttpClient client, Config config, String namespace, DeletionPropagation propagationPolicy, T item);
 
 
     /**
@@ -131,7 +133,7 @@ public interface ResourceHandler<T, V extends VisitableBuilder<T, V>> {
      * @param namespace     The target namespace.
      * @param item          The resource to delete.
      * @param watcher       The {@link Watcher} to use.
-     * @return              The true if the resource was successfully deleted.
+     * @return              The {@link Watch}
      */
   Watch watch(OkHttpClient client, Config config, String namespace, T item, Watcher<T> watcher);
 
@@ -144,9 +146,22 @@ public interface ResourceHandler<T, V extends VisitableBuilder<T, V>> {
    * @param item            The resource to delete.
    * @param resourceVersion The resourceVersion of object
    * @param watcher         The {@link Watcher} to use.
-   * @return                The true if the resource was successfully deleted.
+   * @return                The {@link Watch}
    */
   Watch watch(OkHttpClient client, Config config, String namespace, T item, String resourceVersion, Watcher<T> watcher);
+
+  /**
+   * Watches the specified resource for changes
+   *
+   * @param client         An instance of http client.
+   * @param config         The client config.
+   * @param namespace      The target namespace.
+   * @param item           The resource to delete.
+   * @param listOptions    The {@link io.fabric8.kubernetes.api.model.ListOptions} for available options
+   * @param watcher        The {@link Watcher} to use.
+   * @return               The {@link Watch}
+   */
+  Watch watch(OkHttpClient client, Config config, String namespace, T item, ListOptions listOptions, Watcher<T> watcher);
 
   /**
    * Waits until the specified resource is Ready.

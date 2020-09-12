@@ -16,13 +16,17 @@
 package io.fabric8.kubernetes.client.dsl.base;
 
 import com.fasterxml.jackson.core.JsonParseException;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.fabric8.kubernetes.api.model.DeleteOptions;
+import io.fabric8.kubernetes.api.model.DeletionPropagation;
 import io.fabric8.kubernetes.api.model.HasMetadata;
 import io.fabric8.kubernetes.api.model.Status;
 import io.fabric8.kubernetes.api.model.StatusBuilder;
+import io.fabric8.kubernetes.api.model.autoscaling.v1.Scale;
+import io.fabric8.kubernetes.api.model.extensions.DeploymentRollback;
 import io.fabric8.kubernetes.client.Config;
 import io.fabric8.kubernetes.client.KubernetesClientException;
 import io.fabric8.kubernetes.client.internal.VersionUsageUtils;
@@ -49,9 +53,9 @@ import static io.fabric8.kubernetes.client.internal.PatchUtils.patchMapper;
 
 public class OperationSupport {
 
-
   public static final MediaType JSON = MediaType.parse("application/json");
   public static final MediaType JSON_PATCH = MediaType.parse("application/json-patch+json");
+  public static final MediaType STRATEGIC_MERGE_JSON_PATCH = MediaType.parse("application/strategic-merge-patch+json");
   protected static final ObjectMapper JSON_MAPPER = Serialization.jsonMapper();
   protected static final ObjectMapper YAML_MAPPER = Serialization.yamlMapper();
   private static final String CLIENT_STATUS_FLAG = "CLIENT_STATUS_FLAG";
@@ -73,8 +77,8 @@ public class OperationSupport {
     this(new OperationContext().withOkhttpClient(client).withConfig(config));
   }
 
-  public OperationSupport(OkHttpClient client, Config config, String namespace) {
-    this(new OperationContext().withOkhttpClient(client).withConfig(config).withNamespace(namespace));
+  public OperationSupport(OkHttpClient client, Config config, String namespace, DeletionPropagation propagationPolicy) {
+    this(new OperationContext().withOkhttpClient(client).withConfig(config).withNamespace(namespace).withPropagationPolicy(propagationPolicy));
   }
 
   public OperationSupport(OperationContext ctx) {
@@ -196,23 +200,37 @@ public class OperationSupport {
     throw new KubernetesClientException("Name mismatch. Item name:" + itemName + ". Operation name:" + operationName + ".");
   }
 
-
-  protected <T> void handleDelete(T resource, long gracePeriodSeconds, boolean cascading) throws ExecutionException, InterruptedException, KubernetesClientException, IOException {
-    handleDelete(getResourceUrl(checkNamespace(resource), checkName(resource)), gracePeriodSeconds, cascading);
+  protected <T> T handleMetric(String resourceUrl, Class<T> type) throws InterruptedException, IOException, ExecutionException {
+      Request.Builder requestBuilder = new Request.Builder()
+        .get()
+        .url(resourceUrl);
+      return handleResponse(requestBuilder, type);
   }
 
-  protected void handleDelete(URL requestUrl, long gracePeriodSeconds, boolean cascading) throws ExecutionException, InterruptedException, KubernetesClientException, IOException {
+  protected <T> void handleDelete(T resource, long gracePeriodSeconds, DeletionPropagation propagationPolicy, boolean cascading) throws ExecutionException, InterruptedException, IOException {
+    handleDelete(getResourceUrl(checkNamespace(resource), checkName(resource)), gracePeriodSeconds, propagationPolicy, cascading);
+  }
+
+  protected void handleDelete(URL requestUrl, long gracePeriodSeconds, DeletionPropagation propagationPolicy, boolean cascading) throws ExecutionException, InterruptedException, IOException {
     RequestBody requestBody = null;
     DeleteOptions deleteOptions = new DeleteOptions();
-    deleteOptions.setOrphanDependents(!cascading);
     if (gracePeriodSeconds >= 0) {
       deleteOptions.setGracePeriodSeconds(gracePeriodSeconds);
+    }
+    /*
+     * Either the propagation policy or the orphan dependent (deprecated) property must be set, but not both.
+     */
+    if (propagationPolicy != null) {
+      deleteOptions.setPropagationPolicy(propagationPolicy.toString());
+    } else {
+      deleteOptions.setOrphanDependents(!cascading);
     }
     requestBody = RequestBody.create(JSON, JSON_MAPPER.writeValueAsString(deleteOptions));
 
     Request.Builder requestBuilder = new Request.Builder().delete(requestBody).url(requestUrl);
     handleResponse(requestBuilder, null, Collections.<String, String>emptyMap());
   }
+
 
   /**
    * Create a resource.
@@ -272,6 +290,12 @@ public class OperationSupport {
     return handleResponse(requestBuilder, type, parameters);
   }
 
+  protected <T> T handleStatusUpdate(T updated, Class<T> type) throws ExecutionException, InterruptedException, KubernetesClientException, IOException {
+    RequestBody body = RequestBody.create(JSON, JSON_MAPPER.writeValueAsString(updated));
+    Request.Builder requestBuilder = new Request.Builder().put(body).url(getResourceUrl(checkNamespace(updated), checkName(updated)) + "/status");
+    return handleResponse(requestBuilder, type);
+  }
+
   /**
    * Send an http patch and handle the response.
    *
@@ -293,6 +317,68 @@ public class OperationSupport {
     return handleResponse(requestBuilder, type, Collections.<String, String>emptyMap());
   }
 
+  /**
+   * Send an http patch and handle the response.
+   *
+   * @param current current object
+   * @param patchForUpdate updated object spec as json string
+   * @param type type of object
+   * @param <T> template argument provided
+   *
+   * @return returns de-serialized version of api server response
+   * @throws ExecutionException Execution Exception
+   * @throws InterruptedException Interrupted Exception
+   * @throws KubernetesClientException KubernetesClientException
+   * @throws IOException IOException
+   */
+  protected <T> T handlePatch(T current, Map<String, Object> patchForUpdate, Class<T> type) throws ExecutionException, InterruptedException, IOException {
+    RequestBody body = RequestBody.create(STRATEGIC_MERGE_JSON_PATCH, JSON_MAPPER.writeValueAsString(patchForUpdate));
+    Request.Builder requestBuilder = new Request.Builder().patch(body).url(getResourceUrl(checkNamespace(current), checkName(current)));
+    return handleResponse(requestBuilder, type, Collections.<String, String>emptyMap());
+  }
+
+  /**
+   * Replace Scale of specified Kubernetes Resource
+   *
+   * @param resourceUrl Kubernetes resource URL
+   * @param scale Scale object which we want to inject
+   * @return updated Scale object
+   * @throws ExecutionException in case of any execution exception
+   * @throws InterruptedException in case thread is interrupted
+   * @throws KubernetesClientException in case error from Kubernetes API
+   * @throws MalformedURLException in case URL formed in invalid
+   * @throws JsonProcessingException in case Json processing fails
+   * @throws IOException in some other I/O problem
+   */
+  protected Scale handleScale(String resourceUrl, Scale scale) throws ExecutionException, InterruptedException, KubernetesClientException, MalformedURLException, JsonProcessingException, IOException {
+    Request.Builder requestBuilder;
+    if (scale != null) {
+      RequestBody body = RequestBody.create(JSON, JSON_MAPPER.writeValueAsString(scale));
+      requestBuilder = new Request.Builder().put(body).url(resourceUrl + "/scale");
+    } else {
+      requestBuilder = new Request.Builder().get().url(resourceUrl + "/scale");
+    }
+    return handleResponse(requestBuilder, Scale.class);
+  }
+
+  /**
+   * Create rollback of a Deployment
+   *
+   * @param resourceUrl resource url
+   * @param deploymentRollback DeploymentRollback resource
+   * @return Status
+   * @throws ExecutionException in case of any execution exception
+   * @throws InterruptedException in case thread is interrupted
+   * @throws KubernetesClientException in case error from Kubernetes API
+   * @throws MalformedURLException in case URL formed in invalid
+   * @throws JsonProcessingException in case Json processing fails
+   * @throws IOException in some other I/O problem
+   */
+  protected Status handleDeploymentRollback(String resourceUrl, DeploymentRollback deploymentRollback) throws ExecutionException, InterruptedException, KubernetesClientException, MalformedURLException, JsonProcessingException, IOException {
+    RequestBody body = RequestBody.create(JSON, JSON_MAPPER.writeValueAsString(deploymentRollback));
+    Request.Builder requestBuilder = new Request.Builder().post(body).url(resourceUrl + "/rollback");
+    return handleResponse(requestBuilder, Status.class);
+  }
 
   /**
    * Send an http get.
@@ -522,6 +608,10 @@ public class OperationSupport {
 
   protected static <T> T unmarshal(InputStream is, TypeReference<T> type) throws KubernetesClientException {
    return Serialization.unmarshal(is, type);
+  }
+
+  protected static <T> Map getObjectValueAsMap(T object) {
+    return JSON_MAPPER.convertValue(object, Map.class);
   }
 
   public Config getConfig() {

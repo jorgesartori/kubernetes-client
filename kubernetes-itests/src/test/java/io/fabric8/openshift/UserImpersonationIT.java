@@ -17,8 +17,15 @@ package io.fabric8.openshift;
 
 import io.fabric8.kubernetes.api.model.ServiceAccount;
 import io.fabric8.kubernetes.api.model.ServiceAccountBuilder;
-import io.fabric8.kubernetes.api.model.rbac.*;
+import io.fabric8.kubernetes.api.model.rbac.ClusterRole;
+import io.fabric8.kubernetes.api.model.rbac.ClusterRoleBinding;
+import io.fabric8.kubernetes.api.model.rbac.ClusterRoleBindingBuilder;
+import io.fabric8.kubernetes.api.model.rbac.ClusterRoleBuilder;
+import io.fabric8.kubernetes.api.model.rbac.PolicyRuleBuilder;
+import io.fabric8.kubernetes.api.model.rbac.RoleRefBuilder;
+import io.fabric8.kubernetes.api.model.rbac.SubjectBuilder;
 import io.fabric8.kubernetes.client.RequestConfig;
+import io.fabric8.kubernetes.client.RequestConfigBuilder;
 import io.fabric8.openshift.api.model.ProjectRequest;
 import io.fabric8.openshift.api.model.User;
 import io.fabric8.openshift.client.OpenShiftClient;
@@ -107,28 +114,29 @@ public class UserImpersonationIT {
 
   @Test
   public void should_be_able_to_return_service_account_name_when_impersonating_current_user() {
-    RequestConfig requestConfig = client.getConfiguration().getRequestConfig();
-    requestConfig.setImpersonateUsername(SERVICE_ACCOUNT);
-    requestConfig.setImpersonateGroups("system:authenticated", "system:authenticated:oauth");
-    requestConfig.setImpersonateExtras(Collections.singletonMap("scopes", Arrays.asList("cn=jane","ou=engineers","dc=example","dc=com")));
+    RequestConfig requestConfig = new RequestConfigBuilder()
+    .withImpersonateUsername(SERVICE_ACCOUNT)
+    .withImpersonateGroups("system:authenticated", "system:authenticated:oauth")
+    .withImpersonateExtras(Collections.singletonMap("scopes", Arrays.asList("cn=jane","ou=engineers","dc=example","dc=com"))).build();
 
-    User user = client.currentUser();
+    User user = client.withRequestConfig(requestConfig).call(OpenShiftClient::currentUser);
     assertThat(user.getMetadata().getName()).isEqualTo(SERVICE_ACCOUNT);
   }
 
-
   @Test
   public void should_be_able_to_create_a_project_impersonating_service_account() {
-    RequestConfig requestConfig = client.getConfiguration().getRequestConfig();
-    requestConfig.setImpersonateUsername(SERVICE_ACCOUNT);
-    requestConfig.setImpersonateGroups("system:authenticated", "system:authenticated:oauth");
-    requestConfig.setImpersonateExtras(Collections.singletonMap("scopes", Collections.singletonList("development")));
+    RequestConfig requestConfig = new RequestConfigBuilder()
+    .withImpersonateUsername(SERVICE_ACCOUNT)
+    .withImpersonateGroups("system:authenticated", "system:authenticated:oauth")
+    .withImpersonateExtras(Collections.singletonMap("scopes", Collections.singletonList("development")))
+    .build();
+
     // Create a project
-    ProjectRequest projectRequest = client.projectrequests().createNew()
+    ProjectRequest projectRequest = client.withRequestConfig(requestConfig).call(c -> c.projectrequests().createNew()
       .withNewMetadata()
       .withName(NEW_PROJECT)
       .endMetadata()
-      .done();
+      .done());
 
     // Grab the requester annotation
     String requester = projectRequest.getMetadata().getAnnotations().get("openshift.io/requester");
@@ -141,7 +149,7 @@ public class UserImpersonationIT {
     // Reset original authentication
     RequestConfig requestConfig = client.getConfiguration().getRequestConfig();
     requestConfig.setImpersonateUsername(null);
-    requestConfig.setImpersonateGroups(null);
+    requestConfig.setImpersonateGroups((String) null);
 
     // DeleteEntity Cluster Role
     client.rbac().clusterRoles().inNamespace(currentNamespace).delete(impersonatorRole);

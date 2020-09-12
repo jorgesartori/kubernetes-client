@@ -13,22 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *#
-/**
- * Copyright (C) 2015 Red Hat, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *         http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 #set ($version = "unknown")
 #set ($group = "")
 #set ($annotations = $model.annotations)
@@ -39,10 +23,20 @@
   #if ($annotation.getClassRef().getName().equals("ApiGroup"))
     #set ($apiGroupName = $annotation.getParameters().get("value"))
   #end
+  #if ($annotation.getClassRef().getName().equals("PackageSuffix"))
+    #set ($packageSuffix = $annotation.getParameters().get("value"))
+  #end
+#end
+
+#set ($isResourceNamespacedFlag = false)
+#foreach ($impl in $model.getImplementsList())
+  #if ($impl.getFullyQualifiedName().equals("io.fabric8.kubernetes.api.model.Namespaced"))
+    #set ($isResourceNamespacedFlag = true)
+  #end
 #end
 
 
-package io.fabric8.kubernetes.client.dsl.internal;
+package io.fabric8.kubernetes.client.dsl.internal$packageSuffix;
 
 import io.fabric8.kubernetes.client.Config;
 import io.fabric8.kubernetes.client.dsl.Resource;
@@ -65,7 +59,11 @@ import java.util.TreeMap;
 public class ${model.name}OperationsImpl extends HasMetadataOperation<${model.name}, ${model.name}List, Doneable${model.name}, Resource<${model.name}, Doneable${model.name}>> {
 
   public ${model.name}OperationsImpl(OkHttpClient client, Config config) {
-    this(new OperationContext().withOkhttpClient(client).withConfig(config));
+    this(client, config, null);
+  }
+
+  public ${model.name}OperationsImpl(OkHttpClient client, Config config, String namespace) {
+    this(new OperationContext().withOkhttpClient(client).withConfig(config).withNamespace(namespace).withPropagationPolicy(DEFAULT_PROPAGATION_POLICY));
   }
 
   public ${model.name}OperationsImpl(OperationContext context) {
@@ -79,5 +77,10 @@ public class ${model.name}OperationsImpl extends HasMetadataOperation<${model.na
 
   public ${model.name}OperationsImpl newInstance(OperationContext context) {
     return new ${model.name}OperationsImpl(context);
+  }
+
+  @Override
+  public boolean isResourceNamespaced() {
+    return $isResourceNamespacedFlag;
   }
 }

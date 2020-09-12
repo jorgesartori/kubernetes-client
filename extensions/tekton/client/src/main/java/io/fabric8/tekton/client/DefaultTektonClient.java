@@ -15,6 +15,8 @@
  */
 package io.fabric8.tekton.client;
 
+import io.fabric8.tekton.client.dsl.V1alpha1APIGroupDSL;
+import io.fabric8.tekton.client.dsl.V1beta1APIGroupDSL;
 import okhttp3.OkHttpClient;
 import io.fabric8.kubernetes.client.ConfigBuilder;
 import io.fabric8.kubernetes.client.RequestConfig;
@@ -22,66 +24,48 @@ import io.fabric8.kubernetes.client.WithRequestCallable;
 import io.fabric8.kubernetes.client.dsl.FunctionCallable;
 import io.fabric8.kubernetes.client.BaseClient;
 import io.fabric8.kubernetes.client.Config;
-import io.fabric8.kubernetes.client.dsl.MixedOperation;
-import io.fabric8.kubernetes.client.dsl.NonNamespaceOperation;
-import io.fabric8.kubernetes.client.dsl.Resource;
-
-import io.fabric8.tekton.pipeline.v1alpha1.*;
-import io.fabric8.tekton.client.internal.*;
 
 public class DefaultTektonClient extends BaseClient implements NamespacedTektonClient {
 
-    public DefaultTektonClient() {
-        super();
-    }
+  public DefaultTektonClient() {
+    super();
+  }
 
-    public DefaultTektonClient(Config configuration) {
-        super(configuration);
-    }
+  public DefaultTektonClient(Config configuration) {
+    super(configuration);
+  }
 
-    public DefaultTektonClient(OkHttpClient httpClient, Config configuration) {
-        super(httpClient, configuration);
-    }
+  public DefaultTektonClient(OkHttpClient httpClient, Config configuration) {
+    super(httpClient, configuration);
+  }
 
-    @Override
-    public NamespacedTektonClient inAnyNamespace() {
-        return inNamespace(null);
-    }
+  @Override
+  public NamespacedTektonClient inAnyNamespace() {
+    return inNamespace(null);
+  }
 
-    @Override
-    public NamespacedTektonClient inNamespace(String namespace) {
-        Config updated = new ConfigBuilder(getConfiguration())
-                .withNamespace(namespace)
-                .build();
+  @Override
+  public NamespacedTektonClient inNamespace(String namespace) {
+    Config updated = new ConfigBuilder(getConfiguration())
+      .withNamespace(namespace)
+      .build();
 
-        return new DefaultTektonClient(getHttpClient(), updated);
-    }
+    return new DefaultTektonClient(getHttpClient(), updated);
+  }
+
   @Override
   public FunctionCallable<NamespacedTektonClient> withRequestConfig(RequestConfig requestConfig) {
     return new WithRequestCallable<NamespacedTektonClient>(this, requestConfig);
   }
 
-  public MixedOperation<Pipeline, PipelineList, DoneablePipeline, Resource<Pipeline, DoneablePipeline>> pipelines() {
-    return new PipelineOperationsImpl(this.getHttpClient(), this.getConfiguration());
+  @Override
+  public V1beta1APIGroupDSL v1beta1() {
+    return adapt(V1beta1APIGroupClient.class);
   }
 
-  public MixedOperation<PipelineRun, PipelineRunList, DoneablePipelineRun, Resource<PipelineRun, DoneablePipelineRun>> pipelineRuns() {
-    return new PipelineRunOperationsImpl(this.getHttpClient(), this.getConfiguration());
-  }
-
-  public MixedOperation<PipelineResource, PipelineResourceList, DoneablePipelineResource, Resource<PipelineResource, DoneablePipelineResource>> pipelineResources() {
-    return new PipelineResourceOperationsImpl(this.getHttpClient(), this.getConfiguration());
-  }
-
-  public MixedOperation<Task, TaskList, DoneableTask, Resource<Task, DoneableTask>> tasks() {
-    return new TaskOperationsImpl(this.getHttpClient(), this.getConfiguration());
-  }
-  public MixedOperation<TaskRun, TaskRunList, DoneableTaskRun, Resource<TaskRun, DoneableTaskRun>> taskRuns() {
-    return new TaskRunOperationsImpl(this.getHttpClient(), this.getConfiguration());
-  }
-
-  public NonNamespaceOperation<ClusterTask, ClusterTaskList, DoneableClusterTask, Resource<ClusterTask, DoneableClusterTask>> clusterTasks() {
-    return new ClusterTaskOperationsImpl(this.getHttpClient(), this.getConfiguration());
+  @Override
+  public V1alpha1APIGroupDSL v1alpha1() {
+    return adapt(V1alpha1APIGroupClient.class);
   }
 
 }

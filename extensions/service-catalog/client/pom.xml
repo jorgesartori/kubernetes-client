@@ -17,18 +17,16 @@
 
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
   <parent>
     <groupId>io.fabric8</groupId>
     <artifactId>service-catalog</artifactId>
-    <version>4.4-SNAPSHOT</version>
-    <relativePath>../pom.xml</relativePath>
+    <version>4.11-SNAPSHOT</version>
   </parent>
-  <modelVersion>4.0.0</modelVersion>
 
-  <groupId>io.fabric8</groupId>
   <artifactId>servicecatalog-client</artifactId>
-  <name>Fabric8 :: Service Catalog :: Client</name>
   <packaging>bundle</packaging>
+  <name>Fabric8 :: Service Catalog :: Client</name>
 
   <properties>
     <useIncrementalCompilation>false</useIncrementalCompilation>
@@ -40,10 +38,10 @@
     <osgi.export>
       io.fabric8.servicecatalog.client.*
     </osgi.export>
-
-    <jsonassert.version>1.2.3</jsonassert.version>
-    <lombok.version>1.16.4</lombok.version>
-    <validation-api.version>1.1.0.Final</validation-api.version>
+    <osgi.include.resources>
+      /META-INF/services/io.fabric8.kubernetes.client.ExtensionAdapter=target/classes/META-INF/services/io.fabric8.kubernetes.client.ExtensionAdapter,
+      /META-INF/services/io.fabric8.kubernetes.client.ResourceHandler=target/classes/META-INF/services/io.fabric8.kubernetes.client.ResourceHandler
+    </osgi.include.resources>
   </properties>
 
   <dependencies>
@@ -56,7 +54,6 @@
     <dependency>
       <groupId>io.fabric8</groupId>
       <artifactId>kubernetes-client</artifactId>
-      <version>${project.version}</version>
       <exclusions>
         <exclusion>
           <groupId>io.sundr</groupId>
@@ -68,42 +65,27 @@
     <dependency>
       <groupId>com.fasterxml.jackson.module</groupId>
       <artifactId>jackson-module-jaxb-annotations</artifactId>
-      <version>2.6.3</version>
-    </dependency>
-    <dependency>
-      <groupId>javax.validation</groupId>
-      <artifactId>validation-api</artifactId>
-      <version>${validation-api.version}</version>
     </dependency>
     <dependency>
       <groupId>io.sundr</groupId>
       <artifactId>builder-annotations</artifactId>
-      <version>${sundrio.version}</version>
-      <exclusions>
-        <exclusion>
-          <groupId>com.sun</groupId>
-          <artifactId>tools</artifactId>
-        </exclusion>
-      </exclusions>
-      <scope>compile</scope>
-      <optional>true</optional>
+    </dependency>
+    <dependency>
+      <groupId>io.sundr</groupId>
+      <artifactId>transform-annotations</artifactId>
     </dependency>
     <dependency>
       <groupId>org.projectlombok</groupId>
       <artifactId>lombok</artifactId>
-      <version>${lombok.version}</version>
-      <scope>provided</scope>
     </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-engine</artifactId>
-      <version>${junit.version}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-migrationsupport</artifactId>
-      <version>${junit.version}</version>
       <scope>test</scope>
     </dependency>
   </dependencies>
@@ -113,43 +95,20 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-release-plugin</artifactId>
-        <version>2.5</version>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-gpg-plugin</artifactId>
-        <version>1.5</version>
         <configuration>
-          <passphrase>${gpg.passphrase}</passphrase>
+          <passphrase>4uds0n</passphrase>
           <useAgent>true</useAgent>
         </configuration>
       </plugin>
 
       <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-enforcer-plugin</artifactId>
-        <version>1.3.1</version>
-        <executions>
-          <execution>
-            <id>enforce-versions</id>
-            <goals>
-              <goal>enforce</goal>
-            </goals>
-            <configuration>
-              <rules>
-                <requireMavenVersion>
-                  <version>${maven.version}</version>
-                </requireMavenVersion>
-              </rules>
-            </configuration>
-          </execution>
-        </executions>
-      </plugin>
-
-      <plugin>
         <groupId>io.sundr</groupId>
         <artifactId>sundr-maven-plugin</artifactId>
-        <version>0.18.0</version>
+        <version>${sundrio.version}</version>
         <configuration>
           <boms>
             <bom>
@@ -186,7 +145,7 @@
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>buildnumber-maven-plugin</artifactId>
-        <version>1.3</version>
+        <version>${buildnumber.plugin.version}</version>
         <executions>
           <execution>
             <id>get-build-timestamp</id>
@@ -218,7 +177,6 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-resources-plugin</artifactId>
-        <version>2.6</version>
         <configuration>
           <nonFilteredFileExtensions>
             <nonFilteredFileExtension>zip</nonFilteredFileExtension>
@@ -226,11 +184,6 @@
             <nonFilteredFileExtension>jar</nonFilteredFileExtension>
           </nonFilteredFileExtensions>
         </configuration>
-      </plugin>
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-compiler-plugin</artifactId>
-        <version>3.1</version>
       </plugin>
     </plugins>
   </build>

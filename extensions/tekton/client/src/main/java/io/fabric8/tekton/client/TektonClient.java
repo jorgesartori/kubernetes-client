@@ -15,20 +15,24 @@
  */
 package io.fabric8.tekton.client;
 
-
 import io.fabric8.kubernetes.client.Client;
-import io.fabric8.kubernetes.client.dsl.MixedOperation;
-import io.fabric8.kubernetes.client.dsl.Resource;
-import io.fabric8.kubernetes.client.dsl.NonNamespaceOperation;
-import io.fabric8.tekton.pipeline.v1alpha1.*;
+import io.fabric8.tekton.client.dsl.V1alpha1APIGroupDSL;
+import io.fabric8.tekton.client.dsl.V1beta1APIGroupDSL;
 
+/**
+ * Main interface for Tekton client library.
+ */
 public interface TektonClient extends Client {
-  
-  MixedOperation<Pipeline, PipelineList, DoneablePipeline, Resource<Pipeline, DoneablePipeline>> pipelines();
-  MixedOperation<PipelineRun, PipelineRunList, DoneablePipelineRun, Resource<PipelineRun, DoneablePipelineRun>> pipelineRuns();
-  MixedOperation<PipelineResource, PipelineResourceList, DoneablePipelineResource, Resource<PipelineResource, DoneablePipelineResource>> pipelineResources();
-  MixedOperation<Task, TaskList, DoneableTask, Resource<Task, DoneableTask>> tasks();
-  MixedOperation<TaskRun, TaskRunList, DoneableTaskRun, Resource<TaskRun, DoneableTaskRun>> taskRuns();
+  /**
+   * API entrypoint for tekton.dev/v1beta1 API group resources
+   *
+   * @return {@link V1beta1APIGroupDSL} for Tekton resource operations in this API group.
+   */
+  V1beta1APIGroupDSL v1beta1();
 
-  NonNamespaceOperation<ClusterTask, ClusterTaskList, DoneableClusterTask, Resource<ClusterTask, DoneableClusterTask>> clusterTasks();
+  /**
+   * API entrypoint for tekton.dev/v1alpha1 API group resources
+   * @return {@link V1alpha1APIGroupDSL} for Tekton resource operations in this API group.
+   */
+  V1alpha1APIGroupDSL v1alpha1();
 }

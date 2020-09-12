@@ -16,17 +16,20 @@
 
 package io.fabric8.kubernetes.client.dsl.internal;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.fabric8.kubernetes.api.model.HasMetadata;
 import io.fabric8.kubernetes.api.model.KubernetesResource;
 import io.fabric8.kubernetes.api.model.KubernetesResourceList;
+import io.fabric8.kubernetes.api.model.ListOptions;
 import io.fabric8.kubernetes.api.model.Status;
 import io.fabric8.kubernetes.api.model.WatchEvent;
 import io.fabric8.kubernetes.client.KubernetesClientException;
 import io.fabric8.kubernetes.client.Watch;
 import io.fabric8.kubernetes.client.Watcher;
+import io.fabric8.kubernetes.client.Watcher.Action;
 import io.fabric8.kubernetes.client.dsl.base.BaseOperation;
 import io.fabric8.kubernetes.client.dsl.base.OperationSupport;
+import io.fabric8.kubernetes.client.utils.HttpClientUtils;
+import io.fabric8.kubernetes.client.utils.Serialization;
 import io.fabric8.kubernetes.client.utils.Utils;
 import okhttp3.*;
 import okhttp3.logging.HttpLoggingInterceptor;
@@ -48,11 +51,11 @@ import static java.net.HttpURLConnection.HTTP_GONE;
 public class WatchHTTPManager<T extends HasMetadata, L extends KubernetesResourceList<T>> implements
   Watch {
   private static final Logger logger = LoggerFactory.getLogger(WatchHTTPManager.class);
-  private static final ObjectMapper mapper = new ObjectMapper();
 
   private final BaseOperation<T, L, ?, ?> baseOperation;
   private final Watcher<T> watcher;
   private final AtomicBoolean forceClosed = new AtomicBoolean();
+  private final ListOptions listOptions;
   private final AtomicReference<String> resourceVersion;
   private final int reconnectLimit;
   private final int reconnectInterval;
@@ -71,20 +74,21 @@ public class WatchHTTPManager<T extends HasMetadata, L extends KubernetesResourc
 
   public WatchHTTPManager(final OkHttpClient client,
                           final BaseOperation<T, L, ?, ?> baseOperation,
-                          final String version, final Watcher<T> watcher, final int reconnectInterval,
+                          final ListOptions listOptions, final Watcher<T> watcher, final int reconnectInterval,
                           final int reconnectLimit, long connectTimeout)
     throws MalformedURLException {
     // Default max 32x slowdown from base interval
-    this(client, baseOperation, version, watcher, reconnectInterval, reconnectLimit, connectTimeout, 5);
+    this(client, baseOperation, listOptions, watcher, reconnectInterval, reconnectLimit, connectTimeout, 5);
   }
 
   public WatchHTTPManager(final OkHttpClient client,
                           final BaseOperation<T, L, ?, ?> baseOperation,
-                          final String version, final Watcher<T> watcher, final int reconnectInterval,
+                          final ListOptions listOptions, final Watcher<T> watcher, final int reconnectInterval,
                           final int reconnectLimit, long connectTimeout, int maxIntervalExponent)
     throws MalformedURLException {
 
-    this.resourceVersion = new AtomicReference<>(version); // may be a reference to null
+    this.resourceVersion = new AtomicReference<>(listOptions.getResourceVersion());
+    this.listOptions = listOptions;
     this.baseOperation = baseOperation;
     this.watcher = watcher;
     this.reconnectInterval = reconnectInterval;
@@ -140,12 +144,8 @@ public class WatchHTTPManager<T extends HasMetadata, L extends KubernetesResourc
       httpUrlBuilder.addQueryParameter("fieldSelector", fieldQueryString);
     }
 
-    if (this.resourceVersion.get() != null) {
-      httpUrlBuilder.addQueryParameter("resourceVersion", this.resourceVersion.get());
-    }
-
-    httpUrlBuilder.addQueryParameter("watch", "true");
-
+    listOptions.setResourceVersion(resourceVersion.get());
+    HttpClientUtils.appendListOptionParams(httpUrlBuilder, listOptions);
     String origin = requestUrl.getProtocol() + "://" + requestUrl.getHost();
     if (requestUrl.getPort() != -1) {
         origin += ":" + requestUrl.getPort();
@@ -246,30 +246,23 @@ public class WatchHTTPManager<T extends HasMetadata, L extends KubernetesResourc
         @SuppressWarnings("unchecked")
         T obj = (T) object;
         // Dirty cast - should always be valid though
-        String currentResourceVersion = resourceVersion.get();
-        String newResourceVersion = ((HasMetadata) obj).getMetadata().getResourceVersion();
-        if (currentResourceVersion == null || currentResourceVersion.compareTo(newResourceVersion) < 0) {
-          resourceVersion.compareAndSet(currentResourceVersion, newResourceVersion);
-        }
+        resourceVersion.set(((HasMetadata) obj).getMetadata().getResourceVersion());
         Watcher.Action action = Watcher.Action.valueOf(event.getType());
         watcher.eventReceived(action, obj);
       } else if (object instanceof KubernetesResourceList) {
-          @SuppressWarnings("unchecked")
-          KubernetesResourceList list = (KubernetesResourceList) object;
-          // Dirty cast - should always be valid though
-          String currentResourceVersion = resourceVersion.get();
-          String newResourceVersion = list.getMetadata().getResourceVersion();
-          if (currentResourceVersion == null || currentResourceVersion.compareTo(newResourceVersion) < 0) {
-            resourceVersion.compareAndSet(currentResourceVersion, newResourceVersion);
+        @SuppressWarnings("unchecked")
+
+        KubernetesResourceList list = (KubernetesResourceList) object;
+        // Dirty cast - should always be valid though
+        resourceVersion.set(list.getMetadata().getResourceVersion());
+        Watcher.Action action = Watcher.Action.valueOf(event.getType());
+        List<HasMetadata> items = list.getItems();
+        if (items != null) {
+          String name = baseOperation.getName();
+          for (HasMetadata item : items) {
+            watcher.eventReceived(action, (T) item);
           }
-          Watcher.Action action = Watcher.Action.valueOf(event.getType());
-          List<HasMetadata> items = list.getItems();
-          if (items != null) {
-            String name = baseOperation.getName();
-            for (HasMetadata item : items) {
-              watcher.eventReceived(action, (T) item);
-            }
-          }
+        }
       } else if (object instanceof Status) {
         Status status = (Status) object;
         // The resource version no longer exists - this has to be handled by the caller.
@@ -281,6 +274,7 @@ public class WatchHTTPManager<T extends HasMetadata, L extends KubernetesResourc
           return;
         }
 
+        watcher.eventReceived(Action.ERROR, null);
         logger.error("Error received: {}", status.toString());
       } else {
         logger.error("Unknown message received: {}", messageSource);
@@ -295,7 +289,7 @@ public class WatchHTTPManager<T extends HasMetadata, L extends KubernetesResourc
   }
 
   protected static WatchEvent readWatchEvent(String messageSource) throws IOException {
-    WatchEvent event = mapper.readValue(messageSource, WatchEvent.class);
+    WatchEvent event = Serialization.unmarshal(messageSource, WatchEvent.class);
     KubernetesResource object = null;
     if (event != null) {
       object = event.getObject();;
@@ -305,7 +299,7 @@ public class WatchHTTPManager<T extends HasMetadata, L extends KubernetesResourc
     // so lets try parse the message as a KubernetesResource
     // as it will probably be a list of resources like a BuildList
     if (object == null) {
-      object = mapper.readValue(messageSource, KubernetesResource.class);
+      object = Serialization.unmarshal(messageSource, KubernetesResource.class);
       if (event == null) {
         event = new WatchEvent(object, "MODIFIED");
       } else {
